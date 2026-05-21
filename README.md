@@ -359,3 +359,65 @@ Built by **Team NPC's** for VisionMate
 ## License
 
 MIT License — Free for educational and hackathon use
+
+---
+
+## Run (Quick) and Push Instructions
+
+Follow these steps on your machine to run the project locally and push it to the assigned remote repository.
+
+1) Use the conda environment used during the hackathon (do NOT mix with `.venv`):
+
+```powershell
+conda activate D:\conda_envs\visionmate
+cd D:\Model_for_VisionMate
+```
+
+2) Install dependencies (run once):
+
+```powershell
+D:\conda_envs\visionmate\python.exe -m pip install -r D:\Model_for_VisionMate\requirements.txt
+```
+
+3) Run the full integration demo (webcam):
+
+```powershell
+D:\conda_envs\visionmate\python.exe D:\Model_for_VisionMate\test\test_integration.py
+```
+
+If you hit an OpenMP runtime error (`libiomp5md.dll`), run the demo with the following environment variable as a temporary workaround:
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK='TRUE'
+D:\conda_envs\visionmate\python.exe D:\Model_for_VisionMate\test\test_integration.py
+```
+
+4) Commit & push changes to the assigned Git remote
+
+If your repository already has a remote (e.g., `origin`) configured, run these commands from the project root:
+
+```bash
+git add .
+git commit -m "Update README with run and push instructions"
+git push origin HEAD
+```
+
+If you need to add the remote (replace `<REMOTE_URL>` with the repo URL you were assigned):
+
+```bash
+git remote add origin <REMOTE_URL>
+git branch -M main
+git push -u origin main
+```
+
+5) Verify the push
+
+```bash
+git status
+git log -1
+```
+
+Notes
+- Ensure you run the commands with the same Python interpreter you used to install packages (`D:\conda_envs\visionmate\python.exe`).
+- I cannot push to the remote for you from this environment; run the `git` commands above on your machine where your SSH or HTTPS credentials are configured.
+
