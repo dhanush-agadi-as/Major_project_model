@@ -64,7 +64,7 @@ FLASK_DEBUG = False
 
 # Google Maps API Configuration
 # SECURITY NOTE: Keep this key private! Add config.py to .gitignore before pushing to GitHub
-GOOGLE_MAPS_API_KEY = "AIzaSyBqXAmgcRTvtbuW7vxE_6Jv0aKfQ4yu4FM"
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 # Navigation Configuration
 NAVIGATION_ANNOUNCEMENT_DISTANCE = 50  # meters - announce turns when this close

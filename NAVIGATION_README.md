@@ -162,7 +162,7 @@ generate_obstacle_warnings(objects) → priority-sorted warnings
 
 ```python
 # Google Maps API
-GOOGLE_MAPS_API_KEY = "AIzaSyBqXAmgcRTvtbuW7vxE_6Jv0aKfQ4yu4FM"
+GOOGLE_MAPS_API_KEY = "Your api keyw"
 
 # Navigation Parameters
 NAVIGATION_ANNOUNCEMENT_DISTANCE = 50  # meters before turn to announce
