@@ -4,6 +4,11 @@ Contains all system parameters and settings
 """
 import os
 
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Project Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_PATH = os.path.join(BASE_DIR, "data", "visionmate.db")
