@@ -4,15 +4,19 @@ High-level interface for enrolling and recognizing custom objects
 """
 import cv2
 import numpy as np
+import time
 from typing import List, Tuple, Optional, Dict
 import logging
 from datetime import datetime
 
 from database import VisionMateDB
 from visual_matcher import VisualMatcher
-from config import OBJECT_MEMORY_MATCH_THRESHOLD, OBJECT_ENROLLMENT_FRAMES, USE_DEEP_FEATURES
+from config import (
+    OBJECT_MEMORY_MATCH_THRESHOLD, OBJECT_ENROLLMENT_FRAMES, USE_DEEP_FEATURES,
+    OBJECT_MATCH_COOLDOWN, OBJECT_CANDIDATES_CACHE_TTL
+)
 
-logging.basicConfig(level=logging.INFO)
+logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +45,9 @@ class ObjectMemory:
             'yolo_class': None,
             'custom_name': None
         }
+        
+        self._last_sighting_update = {}   # maps custom_name -> unix timestamp of last DB write
+        self._candidates_cache = {}       # maps yolo_class -> (timestamp, list_of_candidates) for cached DB reads
         
         logger.info("Object memory initialized")
     
@@ -148,6 +155,7 @@ class ObjectMemory:
                 'yolo_class': None,
                 'custom_name': None
             }
+            self._candidates_cache = {}
             return True
         else:
             logger.error("Failed to save object to database")
@@ -176,8 +184,16 @@ class ObjectMemory:
         Returns:
             (custom_name, confidence) if matched, None otherwise
         """
-        # Get all remembered objects of this YOLO class
-        candidates = self.db.get_remembered_objects_by_class(yolo_class)
+        if yolo_class in self._candidates_cache:
+            timestamp, candidates = self._candidates_cache[yolo_class]
+            if (time.time() - timestamp) < OBJECT_CANDIDATES_CACHE_TTL:
+                pass
+            else:
+                candidates = self.db.get_remembered_objects_by_class(yolo_class)
+                self._candidates_cache[yolo_class] = (time.time(), candidates)
+        else:
+            candidates = self.db.get_remembered_objects_by_class(yolo_class)
+            self._candidates_cache[yolo_class] = (time.time(), candidates)
         
         if not candidates:
             # No remembered objects of this class
@@ -207,9 +223,9 @@ class ObjectMemory:
         return None
     
     def update_object_sighting(self, custom_name: str, image: np.ndarray = None,
-                              location: str = None, gps_lat: float = None,
-                              gps_lon: float = None, nearby_objects: List[str] = None,
-                              confidence: float = 0.0) -> bool:
+                               location: str = None, gps_lat: float = None,
+                               gps_lon: float = None, nearby_objects: List[str] = None,
+                               confidence: float = 0.0) -> bool:
         """
         Record a sighting of a remembered object
         
@@ -225,6 +241,12 @@ class ObjectMemory:
         Returns:
             True if successful
         """
+        now = time.time()
+        last_update = self._last_sighting_update.get(custom_name, 0)
+        if (now - last_update) < OBJECT_MATCH_COOLDOWN:
+            return True  # Skip redundant DB write, sighting was updated too recently
+        self._last_sighting_update[custom_name] = now
+
         # Get object from database
         obj = self.db.get_remembered_object(custom_name)
         if not obj:
@@ -296,6 +318,7 @@ class ObjectMemory:
         success = self.db.delete_remembered_object(custom_name)
         if success:
             logger.info(f"Deleted '{custom_name}'")
+            self._candidates_cache = {}
         else:
             logger.warning(f"Failed to delete '{custom_name}' (not found?)")
         return success

@@ -20,6 +20,7 @@ from database import VisionMateDB
 from object_memory import ObjectMemory
 from spatial_navigator import SpatialNavigator
 from voice_command_system import VoiceCommandSystem
+from camera_reader import CameraReader  # Fix 1: threaded webcam capture
 
 # FREE Navigation modules (OpenStreetMap)
 from gps_tracker import GPSTracker
@@ -28,6 +29,7 @@ from ultrasonic_sensor import UltrasonicSensor
 from obstacle_fusion import ObstacleFusion
 from navigation_engine import NavigationEngine
 import config
+from config import OBJECT_RECOGNITION_FRAME_INTERVAL, FACE_RECOGNITION_FRAME_INTERVAL, YOLO_FRAME_SKIP
 
 
 def test_full_pipeline_webcam():
@@ -39,18 +41,27 @@ def test_full_pipeline_webcam():
     print("\nInitializing all modules...")
     db = VisionMateDB()
     object_detector = ObjectDetector()
+    
+    # Fix 2: GPU warmup — OpenVINO compiles GPU kernels on the very first
+    # inference call (~8 s).  Run it now on a blank frame so the delay
+    # happens here (with a clear message) rather than freezing the live
+    # feed silently on the first real frame.
+    print("Warming up GPU inference (one-time, ~8s)...")
+    _ = object_detector.detect(np.zeros((config.CAMERA_HEIGHT, config.CAMERA_WIDTH, 3), dtype=np.uint8))
+    print("Ready.")
+    
     face_recognizer = FaceRecognizer(db)
     # traffic_detector = TrafficSignalDetector()  # DISABLED: Too many false positives
     item_tracker = ItemTracker(db)
     object_memory = ObjectMemory(db)
-    spatial_nav = SpatialNavigator(frame_width=640, frame_height=480)
+    spatial_nav = SpatialNavigator(frame_width=config.CAMERA_WIDTH, frame_height=config.CAMERA_HEIGHT)
     audio = get_audio_feedback(use_gtts=False)
     
     # Initialize FREE navigation system (OpenStreetMap)
     gps_tracker = GPSTracker(mock_mode=config.GPS_MOCK_MODE)
     osm_nav = OSMNavigator()
     ultrasonic = UltrasonicSensor(mock_mode=config.ULTRASONIC_MOCK_MODE)
-    obstacle_fusion = ObstacleFusion(ultrasonic, frame_width=640, frame_height=480)
+    obstacle_fusion = ObstacleFusion(ultrasonic, frame_width=config.CAMERA_WIDTH, frame_height=config.CAMERA_HEIGHT)
     nav_engine = NavigationEngine(
         gps_tracker,
         osm_nav,
@@ -96,11 +107,33 @@ def test_full_pipeline_webcam():
         print("  - 'Navigate' / 'Stop navigation' - Control obstacle guidance")
         print("  - 'List all items' - Show remembered objects")
     
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("✗ Could not open webcam")
+    # Fix 1: Use threaded CameraReader instead of blocking cv2.VideoCapture.
+    # The reader thread grabs frames continuously in the background; cam.read()
+    # returns the latest frame instantly without blocking the AI pipeline.
+    cam = CameraReader(cam_index=0, width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT, fps=30,
+                       backend=cv2.CAP_DSHOW, warmup_frames=5)
+    try:
+        cam.start()
+    except RuntimeError as e:
+        print(f"✗ Could not open webcam: {e}")
         db.close()
         return
+    
+    # Wait until the first frame is ready (max 3 s)
+    deadline = time.time() + 3.0
+    while True:
+        frame, _fid = cam.read()
+        if frame is not None:
+            break
+        if time.time() > deadline:
+            print("✗ No frame from webcam within 3 s")
+            cam.stop()
+            db.close()
+            return
+        time.sleep(0.01)
+    print("✓ Webcam opened (threaded, first frame received)")
+    
+    last_cam_fid = _fid  # track which frame_id the inference loop last processed
     
     frame_count = 0
     start_time = time.time()
@@ -111,6 +144,7 @@ def test_full_pipeline_webcam():
     face_announce_interval = 5.0  # Seconds between re-announcing same person
     last_face_announce = {}  # Track when each person was last announced
     last_recognized_faces = []  # Store last recognized face names for nearby context
+    last_faces = []  # Store last recognized faces for persistent drawing across skipped frames
     last_navigation_announce = 0  # Track when navigation was last announced
     navigation_announce_cooldown = 2.0  # Seconds between navigation announcements
     
@@ -121,6 +155,19 @@ def test_full_pipeline_webcam():
     enrollment_buffer = []
     last_remembered_announce = {}  # Track announcements to avoid spam
     remember_announce_cooldown = 3.0  # Seconds
+    last_remembered_objects = []
+    last_object_to_custom_name = {}
+    last_objects = []  # Store last detected objects to persist across frame skips
+    
+    # Timing instrumentation stats (in milliseconds)
+    timing_stats = {
+        'read': 0.0,
+        'yolo': 0.0,
+        'obj_memory': 0.0,
+        'face': 0.0,
+        'nav': 0.0,
+        'display': 0.0
+    }
     
     # Voice command state
     current_frame = None  # Store current frame for voice commands
@@ -292,17 +339,41 @@ def test_full_pipeline_webcam():
         voice_system.register_command_handler('help', handle_voice_help)
     
     while True:
-        ret, frame = cap.read()
-        if not ret:
+        # Fix 1: non-blocking read from the threaded CameraReader.
+        # 'read' timing now measures the time to get the latest frame from the
+        # reader thread (usually <1 ms when a new frame is waiting), NOT the raw
+        # I/O block time of cap.read() — those are different things.
+        t0 = time.time()
+        while True:
+            frame, cam_fid = cam.read()
+            if cam_fid != last_cam_fid:
+                break          # a genuinely new frame is ready
+            if frame is None:  # shouldn't happen after start(), but be safe
+                time.sleep(0.001)
+                continue
+            time.sleep(0.001)  # yield briefly; don't pin the CPU
+        t1 = time.time()
+        last_cam_fid = cam_fid
+        
+        if frame is None:
             break
         
         frame_count += 1
+        timing_stats['read'] += (t1 - t0) * 1000.0
         
         # Create display frame
         display = frame.copy()
         
         # 1. Object Detection
-        objects = object_detector.detect(frame)
+        t_yolo_0 = time.time()
+        if frame_count % YOLO_FRAME_SKIP == 0:
+            objects = object_detector.detect(frame)
+            last_objects = objects
+        else:
+            objects = last_objects
+        t_yolo_1 = time.time()
+        timing_stats['yolo'] += (t_yolo_1 - t_yolo_0) * 1000.0
+        
         display = object_detector.draw_detections(display, objects)
         
         # Store current state for voice commands
@@ -310,10 +381,10 @@ def test_full_pipeline_webcam():
         current_objects = objects
         
         # 1b. Recognize remembered objects
-        remembered_objects = []
-        object_to_custom_name = {}  # Map object IDs to custom names
-        
-        if not enrollment_mode:  # Don't interfere with enrollment
+        t_mem_0 = time.time()
+        if not enrollment_mode and frame_count % OBJECT_RECOGNITION_FRAME_INTERVAL == 0:
+            remembered_objects = []
+            object_to_custom_name = {}  # Map object IDs to custom names
             for obj in objects:
                 bbox = (obj['bbox'][0], obj['bbox'][1], obj['bbox'][2], obj['bbox'][3])
                 match = object_memory.recognize_object(frame, bbox, obj['class_name'])
@@ -328,13 +399,6 @@ def test_full_pipeline_webcam():
                     # Map this object to its custom name
                     obj_id = id(obj)
                     object_to_custom_name[obj_id] = custom_name
-                    
-                    # Draw custom label
-                    x1, y1, x2, y2 = obj['bbox']
-                    label = f"{custom_name} ({confidence:.0%})"
-                    cv2.rectangle(display, (x1, y1-30), (x1+len(label)*10, y1), (255, 0, 255), -1)
-                    cv2.putText(display, label, (x1, y1-10),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                     
                     # Audio announcement with cooldown
                     if audio_enabled:
@@ -361,11 +425,29 @@ def test_full_pipeline_webcam():
                         nearby_objects=nearby[:5],
                         confidence=confidence
                     )
+            last_remembered_objects = remembered_objects
+            last_object_to_custom_name = object_to_custom_name
+        else:
+            remembered_objects = last_remembered_objects
+            object_to_custom_name = last_object_to_custom_name
+        t_mem_1 = time.time()
+        timing_stats['obj_memory'] += (t_mem_1 - t_mem_0) * 1000.0
+
+        # Draw custom labels for remembered objects on display frame
+        for rem_obj in remembered_objects:
+            custom_name = rem_obj['custom_name']
+            confidence = rem_obj['confidence']
+            x1, y1, x2, y2 = rem_obj['bbox']
+            label = f"{custom_name} ({confidence:.0%})"
+            cv2.rectangle(display, (x1, y1-30), (x1+len(label)*10, y1), (255, 0, 255), -1)
+            cv2.putText(display, label, (x1, y1-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
         
-        # 2. Face Recognition (every 3 frames for better multi-person detection)
-        if frame_count % 3 == 0:
+        # 2. Face Recognition (every FACE_RECOGNITION_FRAME_INTERVAL frames)
+        t_face_0 = time.time()
+        if frame_count % FACE_RECOGNITION_FRAME_INTERVAL == 0:
             faces = face_recognizer.recognize_faces(frame)
-            display = face_recognizer.draw_faces(display, faces)
+            last_faces = faces
             
             # Store recognized face names for nearby context
             last_recognized_faces = [face['name'] for face in faces if face['name'] != 'Unknown']
@@ -380,6 +462,12 @@ def test_full_pipeline_webcam():
                            (current_time - last_face_announce[face['name']]) > face_announce_interval:
                             audio.speak_social(f"Hello {face['name']}")
                             last_face_announce[face['name']] = current_time
+        else:
+            faces = last_faces
+            
+        display = face_recognizer.draw_faces(display, faces)
+        t_face_1 = time.time()
+        timing_stats['face'] += (t_face_1 - t_face_0) * 1000.0
         
         # 3. Traffic Signal Detection - DISABLED (too many false positives)
         # traffic_signal = traffic_detector.detect_signal(frame)
@@ -434,6 +522,7 @@ def test_full_pipeline_webcam():
                            (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # 5. Spatial Navigation for Obstacles
+        t_nav_0 = time.time()
         if navigation_enabled and audio_enabled and not enrollment_mode:
             # Generate spatial guidance
             guidance = spatial_nav.generate_guidance(objects)
@@ -460,6 +549,8 @@ def test_full_pipeline_webcam():
                     cv2.putText(display, g['message'], (10, y_offset),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                     y_offset += 25
+        t_nav_1 = time.time()
+        timing_stats['nav'] += (t_nav_1 - t_nav_0) * 1000.0
         
         # 6. GPS Navigation Update
         if gps_navigation_active and osm_nav.current_route:
@@ -539,7 +630,7 @@ def test_full_pipeline_webcam():
         fps = frame_count / elapsed if elapsed > 0 else 0
         
         # Count recognized faces
-        recognized_count = len([f for f in faces if f['name'] != 'Unknown']) if frame_count % 3 == 0 and 'faces' in locals() else 0
+        recognized_count = len([f for f in faces if f.get('name') != 'Unknown']) if 'faces' in locals() and faces else 0
         
         stats = [
             f"FPS: {fps:.1f}",
@@ -585,9 +676,22 @@ def test_full_pipeline_webcam():
             1
         )
         
+        t_disp_0 = time.time()
         cv2.imshow('VisionMate Integration Test', display)
-        
         key = cv2.waitKey(1) & 0xFF
+        t_disp_1 = time.time()
+        timing_stats['display'] += (t_disp_1 - t_disp_0) * 1000.0
+        
+        if frame_count % 10 == 0:
+            avg_read = timing_stats['read'] / 10.0
+            avg_yolo = timing_stats['yolo'] / 10.0
+            avg_mem = timing_stats['obj_memory'] / 10.0
+            avg_face = timing_stats['face'] / 10.0
+            avg_nav = timing_stats['nav'] / 10.0
+            avg_disp = timing_stats['display'] / 10.0
+            print(f"[Frame {frame_count}] cap.read: {avg_read:.1f}ms | yolo: {avg_yolo:.1f}ms | face: {avg_face:.1f}ms | obj_memory: {avg_mem:.1f}ms | nav: {avg_nav:.1f}ms | display: {avg_disp:.1f}ms")
+            for k in timing_stats:
+                timing_stats[k] = 0.0
         
         if key == ord('q'):
             break
@@ -746,7 +850,8 @@ def test_full_pipeline_webcam():
                 else:
                     print("\n⚠ Voice mode is OFF - press V to enable")
     
-    cap.release()
+    # Fix 1: stop the background reader thread and release the webcam handle.
+    cam.stop()
     cv2.destroyAllWindows()
     
     # Cleanup navigation services

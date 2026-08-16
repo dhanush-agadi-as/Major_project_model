@@ -34,7 +34,7 @@ class FaceRecognizer:
         
         if INSIGHTFACE_AVAILABLE:
             print("Loading InsightFace model...")
-            self.app = FaceAnalysis(name=FACE_MODEL, providers=['CPUExecutionProvider'])
+            self.app = FaceAnalysis(name=FACE_MODEL, providers=['CPUExecutionProvider'], allowed_modules=['detection', 'recognition'])
             self.app.prepare(ctx_id=0, det_size=FACE_DET_SIZE)
             print(f"✓ Face Recognizer initialized (InsightFace)")
         else:
@@ -150,6 +150,10 @@ class FaceRecognizer:
         matched_name = 'Unknown'
         
         for face_id, name, known_embedding in self.known_faces:
+            if embedding.shape != known_embedding.shape:
+                print(f"⚠ Skipping incompatible embedding for '{name}': expected {embedding.shape[0]}-d, got {known_embedding.shape[0]}-d")
+                continue
+                
             # Calculate Euclidean distance
             distance = np.linalg.norm(embedding - known_embedding)
             

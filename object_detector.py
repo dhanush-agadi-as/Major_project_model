@@ -4,12 +4,14 @@ Detects objects including Person, Chair, Bottle, Sofa, TV, and custom Keys class
 """
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 from typing import List, Dict, Tuple
 import os
 from config import (
     YOLO_MODEL, YOLO_CONFIDENCE, YOLO_IOU_THRESHOLD,
-    TARGET_CLASSES, MODELS_DIR
+    TARGET_CLASSES, MODELS_DIR, YOLO_IMGSZ,
+    USE_OPENVINO, YOLO_OPENVINO_MODEL, OPENVINO_DEVICE
 )
 
 
@@ -21,11 +23,45 @@ class ObjectDetector:
         Args:
             model_path: Path to YOLO model file (default: yolov8n.pt)
         """
-        if model_path is None:
-            model_path = YOLO_MODEL
+        self.imgsz = YOLO_IMGSZ
+        self.using_openvino = False
         
-        print(f"Loading YOLOv8 model: {model_path}")
-        self.model = YOLO(model_path)
+        if USE_OPENVINO and os.path.exists(YOLO_OPENVINO_MODEL):
+            print(f"Loading OpenVINO-accelerated YOLO model: {YOLO_OPENVINO_MODEL}")
+            # Ultralytics auto-detects OpenVINO format from the folder path.
+            # Device is selected via the `device` kwarg in predict(), not at load time.
+            self.model = YOLO(YOLO_OPENVINO_MODEL, task='detect')
+            self.using_openvino = True
+            
+            # Determine which OpenVINO device is available to use at inference time.
+            # IMPORTANT: Ultralytics v8.4.x OpenVINO backend (backends/openvino.py line 37)
+            # only activates device routing when self.device starts with "intel:".
+            # A bare "GPU" or "CPU" string is silently ignored and falls through to AUTO/CPU.
+            # Correct format: "intel:gpu", "intel:npu", "intel:cpu", "intel:auto".
+            try:
+                import openvino as ov
+                core = ov.Core()
+                available = core.available_devices
+                # Pick the requested device if present; fall back to AUTO (not CPU) so
+                # OpenVINO's own scheduler can still pick GPU/NPU even if the exact
+                # device string wasn't in the list.
+                selected = OPENVINO_DEVICE if OPENVINO_DEVICE in available else "AUTO"
+                self.device = f"intel:{selected.lower()}"
+                print(f"  Available OpenVINO devices: {available}")
+                print(f"  Device: OpenVINO ({self.device}) | Inference size: {self.imgsz}px")
+            except Exception as e:
+                print(f"  OpenVINO device query failed ({e}), defaulting to intel:cpu")
+                self.device = "intel:cpu"
+                print(f"  Device: OpenVINO (intel:cpu) | Inference size: {self.imgsz}px")
+        else:
+            if model_path is None:
+                model_path = YOLO_MODEL
+            print(f"Loading YOLOv8 model: {model_path}")
+            self.model = YOLO(model_path)
+            self.device = 0 if torch.cuda.is_available() else 'cpu'
+            self.model.to(self.device)
+            print(f"  Device: {'GPU (cuda:0)' if self.device == 0 else 'CPU'} | Inference size: {self.imgsz}px")
+            
         self.confidence = YOLO_CONFIDENCE
         self.iou_threshold = YOLO_IOU_THRESHOLD
         self.target_classes = TARGET_CLASSES
@@ -52,10 +88,13 @@ class ObjectDetector:
                 - bbox: [x1, y1, x2, y2] bounding box
                 - center: (cx, cy) center point
         """
+        # device= is honoured by both the plain PyTorch backend and the OpenVINO backend
         results = self.model(
             frame,
             conf=self.confidence,
             iou=self.iou_threshold,
+            device=self.device,
+            imgsz=self.imgsz,
             verbose=False
         )
         
