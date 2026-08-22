@@ -19,14 +19,14 @@ print("=" * 60)
 print("\nInitializing AI modules...")
 db = VisionMateDB()
 detector = ObjectDetector()
-print("✓ Ready!")
+print("[OK] Ready!")
 
 # Test with webcam
 print("\nOpening webcam (press 'q' to quit)...")
 cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
-    print("✗ No webcam found. Using static test instead.")
+    print("[FAIL] No webcam found. Using static test instead.")
     print("\nCreating test image...")
     import numpy as np
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -35,7 +35,7 @@ if not cap.isOpened():
     
     print("Running object detection...")
     detections = detector.detect(frame)
-    print(f"✓ Detected {len(detections)} objects")
+    print(f"[OK] Detected {len(detections)} objects")
     
     annotated = detector.draw_detections(frame, detections)
     cv2.imshow('VisionMate Demo', annotated)
@@ -70,7 +70,7 @@ else:
     
     cap.release()
     cv2.destroyAllWindows()
-    print(f"\n✓ Processed {frame_count} frames")
+    print(f"\n[OK] Processed {frame_count} frames")
 
 db.close()
-print("\n✓ Demo complete!")
+print("\n[OK] Demo complete!")

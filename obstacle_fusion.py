@@ -123,7 +123,7 @@ class ObstacleFusion:
         enhanced = self.get_object_with_distance(objects)
         
         # Filter obstacles (not books, bottles, etc.)
-        obstacle_classes = ['person', 'chair', 'couch', 'car', 'bicycle', 'motorcycle', 'bus', 'truck']
+        obstacle_classes = ['person', 'dog', 'cat', 'chair', 'couch', 'bed', 'dining table', 'tv', 'car', 'bicycle', 'motorcycle', 'bus', 'truck', 'fire hydrant', 'bench', 'potted plant', 'toilet']
         
         critical = []
         for obj in enhanced:
@@ -239,4 +239,4 @@ if __name__ == "__main__":
         print(f"  P{warn['priority']}: {warn['message']} [{warn['accuracy']}]")
     
     sensor.stop()
-    print("\n✓ Obstacle fusion test complete!")
+    print("\n[OK] Obstacle fusion test complete!")

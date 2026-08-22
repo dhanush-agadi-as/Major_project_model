@@ -61,9 +61,9 @@ def get_camera():
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             camera.set(cv2.CAP_PROP_FPS, 30)
             if camera.isOpened():
-                print("✓ Laptop webcam opened for video feed")
+                print("[OK] Laptop webcam opened for video feed")
             else:
-                print("⚠ Could not open laptop webcam")
+                print("[WARN] Could not open laptop webcam")
     return camera
 
 
@@ -243,7 +243,7 @@ def notification_cli(local_ip):
                     pos = gps_tracker.get_position()
                     print(f"  GPS advanced → {pos[0]:.6f}, {pos[1]:.6f}")
                 else:
-                    print("  ⚠ GPS is in real mode, cannot advance mock")
+                    print("  [WARN] GPS is in real mode, cannot advance mock")
 
             else:
                 # Send as emergency notification
@@ -252,7 +252,7 @@ def notification_cli(local_ip):
                     message=msg,
                     priority="high"
                 )
-                print(f"  ✓ Notification queued: \"{msg}\"")
+                print(f"  [OK] Notification queued: \"{msg}\"")
                 print(f"    (App will pick it up on next poll)")
 
         except (EOFError, KeyboardInterrupt):
@@ -306,7 +306,7 @@ def main():
         daemon=True
     )
     flask_thread.start()
-    print(f"\n✓ Flask server started on port 5001")
+    print(f"\n[OK] Flask server started on port 5001")
 
     # Run notification CLI in foreground
     notification_cli(local_ip)

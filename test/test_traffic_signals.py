@@ -44,11 +44,11 @@ def test_synthetic_signals():
     red_detection = detector.detect_signal(red_img)
     
     if red_detection:
-        print(f"   ✓ Detected: {red_detection['signal_type']}")
+        print(f"   [OK] Detected: {red_detection['signal_type']}")
         print(f"   Confidence: {red_detection['confidence']:.0f}")
         annotated_red = detector.draw_signal(red_img, red_detection)
     else:
-        print("   ✗ No signal detected")
+        print("   [FAIL] No signal detected")
         annotated_red = red_img
     
     # Test green signal
@@ -57,11 +57,11 @@ def test_synthetic_signals():
     green_detection = detector.detect_signal(green_img)
     
     if green_detection:
-        print(f"   ✓ Detected: {green_detection['signal_type']}")
+        print(f"   [OK] Detected: {green_detection['signal_type']}")
         print(f"   Confidence: {green_detection['confidence']:.0f}")
         annotated_green = detector.draw_signal(green_img, green_detection)
     else:
-        print("   ✗ No signal detected")
+        print("   [FAIL] No signal detected")
         annotated_green = green_img
     
     # Display results
@@ -71,7 +71,7 @@ def test_synthetic_signals():
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     
-    print("\n✓ Synthetic signal test complete!")
+    print("\n[OK] Synthetic signal test complete!")
 
 
 def test_webcam_signals():
@@ -88,7 +88,7 @@ def test_webcam_signals():
     
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("✗ Could not open webcam")
+        print("[FAIL] Could not open webcam")
         return
     
     show_masks = False
@@ -149,7 +149,7 @@ def test_webcam_signals():
     cap.release()
     cv2.destroyAllWindows()
     
-    print("\n\n✓ Webcam test complete!")
+    print("\n\n[OK] Webcam test complete!")
 
 
 def test_hsv_ranges():
@@ -175,10 +175,10 @@ def test_hsv_ranges():
     red_det = detector.detect_signal(red_sample)
     green_det = detector.detect_signal(green_sample)
     
-    print(f"\n  Pure RED detection: {'✓' if red_det and red_det['signal_type'] == 'RED' else '✗'}")
-    print(f"  Pure GREEN detection: {'✓' if green_det and green_det['signal_type'] == 'GREEN' else '✗'}")
+    print(f"\n  Pure RED detection: {'[OK]' if red_det and red_det['signal_type'] == 'RED' else '[FAIL]'}")
+    print(f"  Pure GREEN detection: {'[OK]' if green_det and green_det['signal_type'] == 'GREEN' else '[FAIL]'}")
     
-    print("\n✓ HSV range test complete!")
+    print("\n[OK] HSV range test complete!")
 
 
 if __name__ == "__main__":

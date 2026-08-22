@@ -134,33 +134,33 @@ class LaptopMLServer:
         try:
             # Database
             self.db = VisionMateDB()
-            logger.info("✓ Database ready")
+            logger.info("[OK] Database ready")
 
             # Object detection
             logger.info("Loading YOLOv8 model...")
             self.object_detector = ObjectDetector()
-            logger.info("✓ Object Detector ready")
+            logger.info("[OK] Object Detector ready")
 
             # Face recognition
             logger.info("Loading InsightFace model...")
             self.face_recognizer = FaceRecognizer(self.db)
-            logger.info("✓ Face Recognizer ready")
+            logger.info("[OK] Face Recognizer ready")
 
             # Item tracking
             self.item_tracker = ItemTracker(self.db)
-            logger.info("✓ Item Tracker ready")
+            logger.info("[OK] Item Tracker ready")
 
             # Object memory
             self.object_memory = ObjectMemory(self.db)
-            logger.info("✓ Object Memory ready")
+            logger.info("[OK] Object Memory ready")
 
             # Spatial navigation
             self.spatial_navigator = SpatialNavigator(frame_width=640, frame_height=480)
-            logger.info("✓ Spatial Navigator ready")
+            logger.info("[OK] Spatial Navigator ready")
 
             # Audio feedback (priority-based TTS)
             self.audio = get_audio_feedback(use_gtts=False)
-            logger.info("✓ Audio Feedback ready")
+            logger.info("[OK] Audio Feedback ready")
 
             # GPS + Navigation
             self.gps_tracker = GPSTracker(mock_mode=config.GPS_MOCK_MODE)
@@ -173,7 +173,7 @@ class LaptopMLServer:
                 arrival_distance=config.NAVIGATION_ARRIVAL_DISTANCE
             )
             self.gps_tracker.start()
-            logger.info("✓ GPS + Navigation Engine ready")
+            logger.info("[OK] GPS + Navigation Engine ready")
 
             # Ultrasonic + Obstacle Fusion
             self.ultrasonic = UltrasonicSensor(mock_mode=config.ULTRASONIC_MOCK_MODE)
@@ -181,7 +181,7 @@ class LaptopMLServer:
                 self.ultrasonic, frame_width=640, frame_height=480
             )
             self.ultrasonic.start()
-            logger.info("✓ Ultrasonic + Obstacle Fusion ready")
+            logger.info("[OK] Ultrasonic + Obstacle Fusion ready")
 
             # Voice command system (optional)
             if VOICE_AVAILABLE:
@@ -191,18 +191,18 @@ class LaptopMLServer:
                         self.voice_system.start()
                         self._register_voice_handlers()
                         self.voice_mode_enabled = True
-                        logger.info("✓ Voice Command System ready")
+                        logger.info("[OK] Voice Command System ready")
                     else:
-                        logger.warning("⚠ Voice system init failed (no mic?)")
+                        logger.warning("[WARN] Voice system init failed (no mic?)")
                         self.voice_system = None
                 except Exception as e:
-                    logger.warning(f"⚠ Voice system not available: {e}")
+                    logger.warning(f"[WARN] Voice system not available: {e}")
                     self.voice_system = None
             else:
-                logger.info("⚠ Voice command module not found - skipping")
+                logger.info("[WARN] Voice command module not found - skipping")
 
             logger.info("\n" + "=" * 60)
-            logger.info("✓ ALL MODULES LOADED SUCCESSFULLY!")
+            logger.info("[OK] ALL MODULES LOADED SUCCESSFULLY!")
             logger.info("=" * 60)
             return True
 
@@ -242,7 +242,7 @@ class LaptopMLServer:
                     self.audio.speak_social(
                         f"Starting enrollment for {custom_name}. Keep it steady."
                     )
-                    logger.info(f"✓ Voice: Enrolling '{custom_name}'")
+                    logger.info(f"[OK] Voice: Enrolling '{custom_name}'")
                 except ValueError as e:
                     self.audio.speak_status(f"Error: {e}")
             else:
@@ -260,13 +260,13 @@ class LaptopMLServer:
                 nearby_str = f" near {', '.join(nearby)}" if nearby else ""
                 msg = f"Your {object_name} last seen{nearby_str}"
                 self.audio.speak_navigational(msg)
-                logger.info(f"✓ Voice: {msg}")
+                logger.info(f"[OK] Voice: {msg}")
             else:
                 loc = self.item_tracker.query_item_location(object_name)
                 if loc:
                     msg = f"Your {object_name} on the {loc}"
                     self.audio.speak_navigational(msg)
-                    logger.info(f"✓ Voice: {msg}")
+                    logger.info(f"[OK] Voice: {msg}")
                 else:
                     self.audio.speak_status(f"Haven't seen {object_name}")
 
@@ -274,7 +274,7 @@ class LaptopMLServer:
             if not self.navigation_enabled:
                 self.navigation_enabled = True
                 self.audio.speak_social("Navigation enabled")
-                logger.info("✓ Voice: Navigation ON")
+                logger.info("[OK] Voice: Navigation ON")
             else:
                 self.audio.speak_status("Navigation already active")
 
@@ -282,7 +282,7 @@ class LaptopMLServer:
             if self.navigation_enabled:
                 self.navigation_enabled = False
                 self.audio.speak_social("Navigation disabled")
-                logger.info("✓ Voice: Navigation OFF")
+                logger.info("[OK] Voice: Navigation OFF")
             else:
                 self.audio.speak_status("Navigation already off")
 
@@ -291,7 +291,7 @@ class LaptopMLServer:
             if remembered_list:
                 items = ", ".join([name for name, _ in remembered_list])
                 self.audio.speak_social(f"I remember: {items}")
-                logger.info(f"✓ Voice: Listed {len(remembered_list)} items")
+                logger.info(f"[OK] Voice: Listed {len(remembered_list)} items")
             else:
                 self.audio.speak_status("No items remembered yet")
 
@@ -307,7 +307,7 @@ class LaptopMLServer:
                 self.audio.speak_status("Where do you want to go?")
                 return
             self.audio.speak_social(f"Navigating to {destination}")
-            logger.info(f"✓ Voice: GPS navigation to {destination}")
+            logger.info(f"[OK] Voice: GPS navigation to {destination}")
             dest_coords = self.osm_navigator.geocode_address(
                 destination + ", Bangalore, India"
             )
@@ -331,13 +331,13 @@ class LaptopMLServer:
             self.audio.speak_social(
                 f"Route found. {route['total_distance']}. {route['total_duration']}."
             )
-            logger.info(f"✓ GPS route: {len(route['steps'])} steps")
+            logger.info(f"[OK] GPS route: {len(route['steps'])} steps")
 
         def handle_stop_gps(params):
             if self.gps_navigation_active:
                 self.gps_navigation_active = False
                 self.audio.speak_social("GPS navigation stopped")
-                logger.info("✓ Voice: GPS navigation stopped")
+                logger.info("[OK] Voice: GPS navigation stopped")
             else:
                 self.audio.speak_status("No GPS navigation active")
 
@@ -356,7 +356,7 @@ class LaptopMLServer:
         """Handle incoming connection from Raspberry Pi"""
         client_ip = websocket.remote_address[0]
         logger.info(f"\n{'=' * 60}")
-        logger.info(f"✓ Raspberry Pi connected from: {client_ip}")
+        logger.info(f"[OK] Raspberry Pi connected from: {client_ip}")
         logger.info(f"{'=' * 60}")
         logger.info(f"\nKEYBOARD CONTROLS (click display window first):")
         logger.info(f"  Q = Quit display")
@@ -476,11 +476,12 @@ class LaptopMLServer:
                             frame, tuple(obj['bbox']), obj['class_name']
                         )
                         if match:
-                            custom_name, confidence = match
+                            custom_name, confidence, match_tier = match
                             remembered_objects.append({
                                 'custom_name': custom_name,
                                 'confidence': confidence,
-                                'bbox': obj['bbox']
+                                'bbox': obj['bbox'],
+                                'tier': match_tier
                             })
                             object_to_custom_name[id(obj)] = custom_name
 
@@ -488,39 +489,53 @@ class LaptopMLServer:
                                 'name': custom_name,
                                 'class': obj['class_name'],
                                 'confidence': float(confidence),
+                                'tier': match_tier,
                                 'bbox': [int(x) for x in obj['bbox']]
                             })
 
-                            # Audio with cooldown
-                            if self.audio_enabled:
-                                now = time.time()
-                                last = self.last_remembered_announce.get(custom_name, 0)
-                                if (now - last) > self.remember_announce_cooldown:
-                                    msg = f"Found your {custom_name}"
-                                    self.audio.speak_social(msg)
-                                    self.last_remembered_announce[custom_name] = now
-                                    result['audio_commands'].append({
-                                        'type': 'social', 'text': msg
-                                    })
+                            if match_tier == 'high':
+                                # Audio with cooldown
+                                if self.audio_enabled:
+                                    now = time.time()
+                                    last = self.last_remembered_announce.get(custom_name, 0)
+                                    if (now - last) > self.remember_announce_cooldown:
+                                        msg = f"Found your {custom_name}"
+                                        self.audio.speak_social(msg)
+                                        self.last_remembered_announce[custom_name] = now
+                                        result['audio_commands'].append({
+                                            'type': 'social', 'text': msg
+                                        })
 
-                            # Update sighting with nearby context
-                            nearby = []
-                            for o in detections:
-                                if o is not obj:
-                                    nearby_name = object_to_custom_name.get(
-                                        id(o), o['class_name']
-                                    )
-                                    nearby.append(nearby_name)
-                            nearby.extend(self.last_recognized_faces)
+                                # Update sighting with nearby context
+                                nearby = []
+                                for o in detections:
+                                    if o is not obj:
+                                        nearby_name = object_to_custom_name.get(
+                                            id(o), o['class_name']
+                                        )
+                                        nearby.append(nearby_name)
+                                nearby.extend(self.last_recognized_faces)
 
-                            self.object_memory.update_object_sighting(
-                                custom_name=custom_name,
-                                image=frame,
-                                nearby_objects=nearby[:5],
-                                confidence=confidence
-                            )
-                    except Exception:
-                        pass
+                                self.object_memory.update_object_sighting(
+                                    custom_name=custom_name,
+                                    image=frame,
+                                    nearby_objects=nearby[:5],
+                                    confidence=confidence
+                                )
+                            elif match_tier == 'ambiguous':
+                                # Audio with cooldown for ambiguous
+                                if self.audio_enabled:
+                                    now = time.time()
+                                    last = self.last_remembered_announce.get(custom_name, 0)
+                                    if (now - last) > self.remember_announce_cooldown:
+                                        msg = f"Is this your {custom_name}?"
+                                        self.audio.speak_social(msg)
+                                        self.last_remembered_announce[custom_name] = now
+                                        result['audio_commands'].append({
+                                            'type': 'social', 'text': msg
+                                        })
+                    except Exception as e:
+                        logger.error(f"Error matching object: {e}")
 
             # ── 2b. Enrollment mode – capture frames ──
             if self.enrollment_active and self.enrollment_target_obj:
@@ -537,13 +552,13 @@ class LaptopMLServer:
                         success = self.object_memory.finish_enrollment()
                         name = self.enrollment_target_obj['custom_name']
                         if success:
-                            logger.info(f"✓ Enrolled '{name}'")
+                            logger.info(f"[OK] Enrolled '{name}'")
                             if self.audio_enabled:
                                 self.audio.speak_social(
                                     f"Remembered your {name}"
                                 )
                         else:
-                            logger.error(f"✗ Enrollment failed for '{name}'")
+                            logger.error(f"[FAIL] Enrollment failed for '{name}'")
                         self.enrollment_active = False
                         self.enrollment_target_obj = None
                         self.enrollment_frames_captured = 0
@@ -666,13 +681,13 @@ class LaptopMLServer:
             if self.gps_nav_step + 1 < len(steps):
                 self.gps_nav_step += 1
                 self.last_gps_announcement = None
-                logger.info(f"✓ GPS advanced to step {self.gps_nav_step + 1}")
+                logger.info(f"[OK] GPS advanced to step {self.gps_nav_step + 1}")
             else:
                 if self.audio_enabled:
                     self.audio.speak_social(
                         "You have arrived at your destination"
                     )
-                logger.info("✓ GPS Navigation: ARRIVED!")
+                logger.info("[OK] GPS Navigation: ARRIVED!")
                 self.gps_navigation_active = False
 
         # Obstacle warnings during GPS nav
@@ -834,7 +849,7 @@ class LaptopMLServer:
             if name:
                 success = self.face_recognizer.enroll_face(frame, name)
                 if success:
-                    logger.info(f"✓ Enrolled face: {name}")
+                    logger.info(f"[OK] Enrolled face: {name}")
                     if self.audio_enabled:
                         self.audio.speak_social(f"Enrolled {name}")
                 else:
@@ -866,15 +881,15 @@ class LaptopMLServer:
                                     }
                                     self.enrollment_frames_captured = 0
                                     logger.info(
-                                        f"✓ Enrolling '{custom_name}' - "
+                                        f"[OK] Enrolling '{custom_name}' - "
                                         f"keep in view for 5 frames..."
                                     )
                                 except ValueError as e:
-                                    print(f"✗ {e}")
+                                    print(f"[FAIL] {e}")
                     except (ValueError, IndexError):
-                        print("✗ Invalid selection")
+                        print("[FAIL] Invalid selection")
                 else:
-                    print("✗ No objects detected")
+                    print("[FAIL] No objects detected")
 
         elif key == ord('l'):
             # List remembered objects
@@ -896,19 +911,23 @@ class LaptopMLServer:
                               if location['context'] else [])
                     nearby_str = f" near {', '.join(nearby)}" if nearby else ""
                     msg = f"Your {item} last seen{nearby_str}"
-                    print(f"✓ {msg}")
+                    print(f"[OK] {msg}")
                     print(f"  Time: {location['timestamp']}")
+                    if location.get('gps_lat') is not None and location.get('gps_lon') is not None:
+                        print(f"  GPS: {location['gps_lat']:.6f}, {location['gps_lon']:.6f}")
+                    else:
+                        print("  GPS: not recorded for this sighting")
                     if self.audio_enabled:
                         self.audio.speak_navigational(msg)
                 else:
                     loc = self.item_tracker.query_item_location(item)
                     if loc:
                         msg = f"Your {item} are on the {loc}"
-                        print(f"✓ {msg}")
+                        print(f"[OK] {msg}")
                         if self.audio_enabled:
                             self.audio.speak_navigational(msg)
                     else:
-                        print(f"✗ Haven't seen {item}")
+                        print(f"[FAIL] Haven't seen {item}")
 
         elif key == ord('a'):
             self.audio_enabled = not self.audio_enabled
@@ -934,7 +953,7 @@ class LaptopMLServer:
                         destination + ", Bangalore, India"
                     )
                     if not dest_coords:
-                        print("✗ Could not find destination")
+                        print("[FAIL] Could not find destination")
                         if self.audio_enabled:
                             self.audio.speak_status(
                                 "Could not find destination"
@@ -942,7 +961,7 @@ class LaptopMLServer:
                     else:
                         current_pos = self.gps_tracker.get_position()
                         if not current_pos:
-                            print("✗ Waiting for GPS signal")
+                            print("[FAIL] Waiting for GPS signal")
                         else:
                             route = self.osm_navigator.get_directions(
                                 current_pos, dest_coords, mode='foot'
@@ -953,7 +972,7 @@ class LaptopMLServer:
                                 self.gps_nav_step = 0
                                 self.last_gps_announcement = None
                                 print(
-                                    f"✓ Route: {route['total_distance']}, "
+                                    f"[OK] Route: {route['total_distance']}, "
                                     f"{route['total_duration']}, "
                                     f"{len(route['steps'])} steps"
                                 )
@@ -964,7 +983,7 @@ class LaptopMLServer:
                                         f"{route['total_duration']}."
                                     )
                             else:
-                                print("✗ Could not find route")
+                                print("[FAIL] Could not find route")
             else:
                 self.gps_navigation_active = False
                 logger.info("GPS navigation stopped")
@@ -979,7 +998,7 @@ class LaptopMLServer:
                 if pos:
                     print(f"Mock GPS → {pos[0]:.6f}, {pos[1]:.6f}")
             else:
-                print("⚠ GPS is in REAL mode")
+                print("[WARN] GPS is in REAL mode")
 
         elif key == ord('v'):
             # Toggle voice
@@ -990,7 +1009,7 @@ class LaptopMLServer:
                 if self.audio_enabled:
                     self.audio.speak_status(f"Voice mode {status}")
             else:
-                print("⚠ Voice system not available")
+                print("[WARN] Voice system not available")
 
         elif key == 32:  # SPACE
             # Trigger voice input
@@ -1000,9 +1019,9 @@ class LaptopMLServer:
                     self.audio.speak_status("Listening")
                 self.voice_system.trigger_voice_input()
             elif not self.voice_system:
-                print("⚠ Voice system not available")
+                print("[WARN] Voice system not available")
             else:
-                print("⚠ Voice mode OFF - press V to enable")
+                print("[WARN] Voice mode OFF - press V to enable")
 
         elif key == ord('d'):
             # Show database contents

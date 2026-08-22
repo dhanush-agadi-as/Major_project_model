@@ -12,7 +12,8 @@ from datetime import datetime
 from database import VisionMateDB
 from visual_matcher import VisualMatcher
 from config import (
-    OBJECT_MEMORY_MATCH_THRESHOLD, OBJECT_ENROLLMENT_FRAMES, USE_DEEP_FEATURES,
+    OBJECT_MATCH_HIGH_CONFIDENCE, OBJECT_MATCH_AMBIGUOUS_LOW, 
+    OBJECT_ENROLLMENT_FRAMES, USE_DEEP_FEATURES,
     OBJECT_MATCH_COOLDOWN, OBJECT_CANDIDATES_CACHE_TTL
 )
 
@@ -34,9 +35,11 @@ class ObjectMemory:
         self.db = db if db is not None else VisionMateDB()
         self.matcher = matcher if matcher is not None else VisualMatcher(
             feature_type='ORB',
-            match_threshold=OBJECT_MEMORY_MATCH_THRESHOLD,
+            match_threshold=OBJECT_MATCH_AMBIGUOUS_LOW,
             use_deep_features=USE_DEEP_FEATURES
         )
+        
+        self.pending_confirmation = None # For ambiguous matches
         
         # Enrollment buffer for multi-frame capture
         self.enrollment_buffer = {
@@ -140,7 +143,7 @@ class ObjectMemory:
         )
         
         if obj_id > 0:
-            logger.info(f"✓ Object '{custom_name}' enrolled successfully (ID: {obj_id})")
+            logger.info(f"[OK] Object '{custom_name}' enrolled successfully (ID: {obj_id})")
             if features.get('feature_type') == 'deep':
                 logger.info(f"  Deep embedding: {features.get('embedding_size')}D vector")
                 logger.info(f"  Frames aggregated: {features.get('num_frames')}")
@@ -217,9 +220,21 @@ class ObjectMemory:
         
         if match:
             obj_id, custom_name, confidence = match
-            logger.info(f"Recognized '{custom_name}' with {confidence:.2%} confidence")
-            return (custom_name, confidence)
-        
+            
+            if confidence >= OBJECT_MATCH_HIGH_CONFIDENCE:
+                logger.info(f"Recognized '{custom_name}' with high confidence ({confidence:.2%})")
+                return (custom_name, confidence, "high")
+            elif confidence >= OBJECT_MATCH_AMBIGUOUS_LOW:
+                logger.info(f"Ambiguous match for '{custom_name}' ({confidence:.2%})")
+                self.pending_confirmation = {
+                    'custom_name': custom_name,
+                    'confidence': confidence,
+                    'timestamp': time.time()
+                }
+                return (custom_name, confidence, "ambiguous")
+            else:
+                logger.debug(f"Discarding low confidence match for '{custom_name}' ({confidence:.2%})")
+                
         return None
     
     def update_object_sighting(self, custom_name: str, image: np.ndarray = None,
@@ -294,6 +309,27 @@ class ObjectMemory:
         
         logger.info(f"No sighting recorded for '{custom_name}'")
         return None
+        
+    def confirm_pending_match(self, location: str = None, gps_lat: float = None, gps_lon: float = None) -> bool:
+        """Confirm the currently pending ambiguous match and update its location."""
+        if not self.pending_confirmation:
+            return False
+            
+        custom_name = self.pending_confirmation['custom_name']
+        confidence = self.pending_confirmation['confidence']
+        self.pending_confirmation = None
+        
+        return self.update_object_sighting(
+            custom_name=custom_name,
+            location=location,
+            gps_lat=gps_lat,
+            gps_lon=gps_lon,
+            confidence=confidence
+        )
+        
+    def clear_pending_match(self):
+        """Clear the pending confirmation state."""
+        self.pending_confirmation = None
     
     def list_remembered_objects(self) -> List[Tuple[str, str]]:
         """
@@ -345,7 +381,7 @@ if __name__ == "__main__":
     print("=" * 60)
     
     memory = ObjectMemory()
-    print("✓ Object memory initialized")
+    print("[OK] Object memory initialized")
     
     # Test enrollment workflow
     print("\nTest 1: Start enrollment")

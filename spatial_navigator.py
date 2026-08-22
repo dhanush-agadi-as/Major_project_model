@@ -28,8 +28,7 @@ class SpatialNavigator:
     }
     
     # Obstacle classes that require immediate guidance
-    OBSTACLE_CLASSES = ['person', 'chair', 'couch', 'bicycle', 'car', 'motorcycle', 
-                        'bus', 'truck', 'bench', 'potted plant', 'dog', 'cat']
+    OBSTACLE_CLASSES = ['person', 'dog', 'cat', 'chair', 'couch', 'bed', 'dining table', 'tv', 'car', 'bicycle', 'motorcycle', 'bus', 'truck', 'fire hydrant', 'bench', 'potted plant', 'toilet']
     
     def __init__(self, frame_width: int = 640, frame_height: int = 480, 
                  distance_threshold: float = 0.3):

@@ -400,7 +400,7 @@ if __name__ == "__main__":
     print("=" * 60)
     
     matcher = VisualMatcher(feature_type='ORB', match_threshold=0.5)
-    print(f"✓ Matcher initialized")
+    print(f"[OK] Matcher initialized")
     
     # Create test images
     img1 = np.random.randint(0, 255, (200, 200, 3), dtype=np.uint8)
@@ -414,12 +414,12 @@ if __name__ == "__main__":
     features1 = matcher.extract_features(img1)
     features2 = matcher.extract_features(img2)
     
-    print(f"✓ Extracted {len(features1['keypoints'])} keypoints from image 1")
-    print(f"✓ Extracted {len(features2['keypoints'])} keypoints from image 2")
+    print(f"[OK] Extracted {len(features1['keypoints'])} keypoints from image 1")
+    print(f"[OK] Extracted {len(features2['keypoints'])} keypoints from image 2")
     
     # Match features
     confidence, num_matches = matcher.match_features(features1, features2)
-    print(f"✓ Match confidence: {confidence:.3f} ({num_matches} good matches)")
+    print(f"[OK] Match confidence: {confidence:.3f} ({num_matches} good matches)")
     
     print("=" * 60)
     print("Visual matcher is ready!")

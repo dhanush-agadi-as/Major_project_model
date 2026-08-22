@@ -21,7 +21,7 @@ def demo_voice_commands():
     
     parser = VoiceCommandParser()
     
-    print("\n✓ Voice command system initialized successfully!")
+    print("\n[OK] Voice command system initialized successfully!")
     print("\nSupported Commands:")
     print("  - 'Remember this phone' -> Enrolls phone as custom object")
     print("  - 'Find my keys' -> Locates your keys")
@@ -51,13 +51,13 @@ def demo_voice_commands():
             print(f"  → Parameters: {result['parameters']}")
     
     print("\n" + "=" * 70)
-    print("✓ All tests passed!")
+    print("[OK] All tests passed!")
     print("\nIntegration Status:")
-    print("  ✓ Voice command parser: Working (7/7 tests passed)")
-    print("  ✓ Speech recognition: Installed (SpeechRecognition 3.14.5)")
-    print("  ✓ Microphone support: Available (PyAudio 0.2.14)")
-    print("  ✓ Integration with test_integration.py: Complete")
-    print("  ✓ Command handlers: Registered (remember, find, navigate, etc.)")
+    print("  [OK] Voice command parser: Working (7/7 tests passed)")
+    print("  [OK] Speech recognition: Installed (SpeechRecognition 3.14.5)")
+    print("  [OK] Microphone support: Available (PyAudio 0.2.14)")
+    print("  [OK] Integration with test_integration.py: Complete")
+    print("  [OK] Command handlers: Registered (remember, find, navigate, etc.)")
     print("\nHow to Use:")
     print("  1. Run: python test\\test_integration.py")
     print("  2. Select option 1 (Full pipeline with webcam)")

@@ -14,29 +14,29 @@ print("=" * 60)
 # Test imports
 try:
     from object_memory import ObjectMemory
-    print("✓ ObjectMemory imported")
+    print("[OK] ObjectMemory imported")
 except Exception as e:
-    print(f"✗ ObjectMemory import failed: {e}")
+    print(f"[FAIL] ObjectMemory import failed: {e}")
     sys.exit(1)
 
 try:
     from visual_matcher import VisualMatcher
-    print("✓ VisualMatcher imported")
+    print("[OK] VisualMatcher imported")
 except Exception as e:
-    print(f"✗ VisualMatcher import failed: {e}")
+    print(f"[FAIL] VisualMatcher import failed: {e}")
     sys.exit(1)
 
 try:
     from database import VisionMateDB
-    print("✓ Database imported")
+    print("[OK] Database imported")
 except Exception as e:
-    print(f"✗ Database import failed: {e}")
+    print(f"[FAIL] Database import failed: {e}")
     sys.exit(1)
 
 # Test database with object memory tables
 try:
     db = VisionMateDB()
-    print("✓ Database initialized")
+    print("[OK] Database initialized")
     
     # Check if new tables exist
     cursor = db.cursor
@@ -47,15 +47,15 @@ try:
     
     for table in required_tables:
         if table in tables:
-            print(f"✓ Table '{table}' exists")
+            print(f"[OK] Table '{table}' exists")
         else:
-            print(f"✗ Table '{table}' missing")
+            print(f"[FAIL] Table '{table}' missing")
             sys.exit(1)
     
     db.close()
     
 except Exception as e:
-    print(f"✗ Database test failed: {e}")
+    print(f"[FAIL] Database test failed: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)
@@ -63,20 +63,20 @@ except Exception as e:
 # Test object memory initialization
 try:
     memory = ObjectMemory()
-    print("✓ ObjectMemory initialized")
+    print("[OK] ObjectMemory initialized")
     
     # Test basic operations
     objects = memory.list_remembered_objects()
-    print(f"✓ Found {len(objects)} remembered objects")
+    print(f"[OK] Found {len(objects)} remembered objects")
     
 except Exception as e:
-    print(f"✗ ObjectMemory test failed: {e}")
+    print(f"[FAIL] ObjectMemory test failed: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)
 
 print("\n" + "=" * 60)
-print("Server compatibility tests passed! ✓")
+print("Server compatibility tests passed! [OK]")
 print("=" * 60)
 print("\nServer endpoints ready:")
 print("  POST /api/enroll_object")

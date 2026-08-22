@@ -25,7 +25,7 @@ class ItemTracker:
         # Track item-container pairs over time
         self.tracking_state = {}  # {(item, container): {'start_time': float, 'confirmed': bool}}
         
-        print(f"✓ Item Tracker initialized")
+        print(f"[OK] Item Tracker initialized")
         print(f"  IoU threshold: {self.iou_threshold}")
         print(f"  Tracking timeout: {self.timeout}s")
     
@@ -101,8 +101,8 @@ class ItemTracker:
         confirmed_locations = []
         
         # Define which objects can be containers
-        container_classes = ['chair', 'sofa', 'tv']  # Can add 'table' when available
-        item_classes = ['keys', 'bottle']  # Trackable items
+        container_classes = ['chair', 'couch', 'bed', 'dining table', 'tv', 'sink', 'bench', 'sofa']  # Trackable containers
+        item_classes = ['keys', 'bottle', 'cup', 'cell phone', 'laptop', 'backpack', 'handbag', 'umbrella', 'book', 'remote', 'keyboard', 'mouse']  # Trackable items
         
         # Extract items and containers from detections
         items = [d for d in detections if d['class_name'] in item_classes]
@@ -135,7 +135,7 @@ class ItemTracker:
                                 item['class_name'],
                                 container['class_name']
                             )
-                            print(f"✓ Confirmed: {item['class_name']} on {container['class_name']}")
+                            print(f"[OK] Confirmed: {item['class_name']} on {container['class_name']}")
                     else:
                         # Start tracking new pair
                         self.tracking_state[pair_key] = {
@@ -181,4 +181,4 @@ if __name__ == "__main__":
     box2 = [150, 150, 250, 250]
     iou = tracker.calculate_iou(box1, box2)
     print(f"\nIoU test: {iou:.3f}")
-    print("\n✓ Item Tracker ready")
+    print("\n[OK] Item Tracker ready")

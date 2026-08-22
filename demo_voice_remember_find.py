@@ -32,11 +32,11 @@ def main():
     # Initialize voice system
     voice = VoiceCommandSystem()
     if not voice.initialize():
-        print("✗ Voice system failed - check microphone")
+        print("[FAIL] Voice system failed - check microphone")
         return
     
     voice.start()
-    print("✓ All systems ready!")
+    print("[OK] All systems ready!")
     
     # State
     current_frame = None
@@ -70,10 +70,10 @@ def main():
             enrollment_target = {'custom_name': custom_name, 'yolo_class': obj['class_name']}
             enrollment_count = 0
             audio.speak_social(f"Starting enrollment for {custom_name}. Keep it in view.")
-            print(f"✓ Enrolling '{custom_name}'...")
+            print(f"[OK] Enrolling '{custom_name}'...")
         except ValueError as e:
             audio.speak_status(str(e))
-            print(f"✗ Error: {e}")
+            print(f"[FAIL] Error: {e}")
     
     def handle_find(params):
         obj_name = params.get('object_name', '')
@@ -87,20 +87,25 @@ def main():
             nearby_str = f" near {', '.join(nearby[:3])}" if nearby else ""
             msg = f"Your {obj_name} last seen{nearby_str}"
             audio.speak_navigational(msg)
-            print(f"✓ {msg}")
+            print(f"[OK] {msg}")
+            print(f"  Time: {location['timestamp']}")
+            if location.get('gps_lat') is not None and location.get('gps_lon') is not None:
+                print(f"  GPS: {location['gps_lat']:.6f}, {location['gps_lon']:.6f}")
+            else:
+                print("  GPS: not recorded for this sighting")
         else:
             audio.speak_status(f"Haven't seen {obj_name}")
-            print(f"✗ No record of {obj_name}")
+            print(f"[FAIL] No record of {obj_name}")
     
     def handle_list(params):
         items = memory.list_remembered_objects()
         if items:
             names = ", ".join([name for name, _ in items])
             audio.speak_social(f"I remember: {names}")
-            print(f"✓ Remembered: {names}")
+            print(f"[OK] Remembered: {names}")
         else:
             audio.speak_status("No items remembered yet")
-            print("✗ No items remembered")
+            print("[FAIL] No items remembered")
     
     voice.register_command_handler('remember', handle_remember)
     voice.register_command_handler('find', handle_find)
@@ -109,7 +114,7 @@ def main():
     # Open webcam
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("✗ Cannot open webcam")
+        print("[FAIL] Cannot open webcam")
         return
     
     print("\n" + "=" * 70)
@@ -157,7 +162,7 @@ def main():
                 if enrollment_count >= 5:
                     if memory.finish_enrollment():
                         audio.speak_social(f"Remembered your {enrollment_target['custom_name']}")
-                        print(f"✓ Enrolled '{enrollment_target['custom_name']}'!")
+                        print(f"[OK] Enrolled '{enrollment_target['custom_name']}'!")
                     enrollment_mode = False
                     enrollment_target = None
         
@@ -203,7 +208,7 @@ def main():
     voice.stop()
     db.close()
     
-    print("\n✓ Demo complete!")
+    print("\n[OK] Demo complete!")
 
 
 if __name__ == "__main__":

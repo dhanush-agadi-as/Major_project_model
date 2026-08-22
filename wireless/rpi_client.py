@@ -77,7 +77,7 @@ class RaspberryPiClient:
             if test_frame is not None and test_frame.shape[0] > 0:
                 self.use_picamera2 = True
                 camera_initialized = True
-                logger.info(f"✓ Camera initialized with picamera2 (frame: {test_frame.shape})")
+                logger.info(f"[OK] Camera initialized with picamera2 (frame: {test_frame.shape})")
             else:
                 logger.warning("picamera2 started but capture returned empty frame, closing...")
                 try:
@@ -112,7 +112,7 @@ class RaspberryPiClient:
                 ret, test_frame = self.camera.read()
                 if ret and test_frame is not None:
                     camera_initialized = True
-                    logger.info(f"✓ Camera initialized with OpenCV (frame: {test_frame.shape})")
+                    logger.info(f"[OK] Camera initialized with OpenCV (frame: {test_frame.shape})")
                 else:
                     logger.warning("OpenCV V4L2 opened but could not read frame")
                     self.camera.release()
@@ -142,7 +142,7 @@ class RaspberryPiClient:
             for port in ['/dev/ttyUSB0', '/dev/ttyACM0', '/dev/ttyUSB1']:
                 try:
                     self.esp32_serial = serial.Serial(port, 115200, timeout=0.1)
-                    logger.info(f"✓ ESP32 connected on {port}")
+                    logger.info(f"[OK] ESP32 connected on {port}")
                     break
                 except:
                     continue
@@ -157,11 +157,11 @@ class RaspberryPiClient:
             self.audio_engine = pyttsx3.init()
             self.audio_engine.setProperty('rate', 180)  # Speed
             self.audio_engine.setProperty('volume', 1.0)  # Volume
-            logger.info("✓ Audio engine initialized (Bluetooth output)")
+            logger.info("[OK] Audio engine initialized (Bluetooth output)")
         except Exception as e:
             logger.warning(f"Audio initialization failed: {e}")
         
-        logger.info("✓ Raspberry Pi Client ready!")
+        logger.info("[OK] Raspberry Pi Client ready!")
         return True
     
     def read_esp32_sensors(self):
@@ -326,7 +326,7 @@ class RaspberryPiClient:
         
         try:
             async with websockets.connect(self.server_url, ping_interval=None, open_timeout=20, close_timeout=10) as websocket:
-                logger.info("✓ Connected to laptop ML server!")
+                logger.info("[OK] Connected to laptop ML server!")
                 
                 # Start streaming
                 await self.capture_and_stream(websocket)

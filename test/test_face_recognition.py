@@ -28,7 +28,7 @@ def test_face_enrollment():
     
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("✗ Could not open webcam")
+        print("[FAIL] Could not open webcam")
         return
     
     enrolled = False
@@ -76,10 +76,10 @@ def test_face_enrollment():
             if name:
                 success = recognizer.enroll_face(frame, name)
                 if success:
-                    print(f"✓ Successfully enrolled {name}")
+                    print(f"[OK] Successfully enrolled {name}")
                     enrolled = True
                 else:
-                    print("✗ Enrollment failed")
+                    print("[FAIL] Enrollment failed")
             
         elif key == ord('q'):
             break
@@ -88,7 +88,7 @@ def test_face_enrollment():
     cv2.destroyAllWindows()
     
     if enrolled:
-        print("\n✓ Enrollment test complete!")
+        print("\n[OK] Enrollment test complete!")
     
     db.close()
 
@@ -106,7 +106,7 @@ def test_face_recognition():
     known_faces = db.get_all_faces()
     print(f"\nKnown faces in database: {len(known_faces)}")
     if len(known_faces) == 0:
-        print("⚠ No faces enrolled! Run enrollment first.")
+        print("[WARN] No faces enrolled! Run enrollment first.")
         print("Continuing with recognition test (will show 'Unknown')...")
     else:
         for face_id, name, _ in known_faces:
@@ -117,7 +117,7 @@ def test_face_recognition():
     
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("✗ Could not open webcam")
+        print("[FAIL] Could not open webcam")
         db.close()
         return
     
@@ -162,7 +162,7 @@ def test_face_recognition():
     cap.release()
     cv2.destroyAllWindows()
     
-    print("\n\n✓ Recognition test complete!")
+    print("\n\n[OK] Recognition test complete!")
     db.close()
 
 
@@ -181,7 +181,110 @@ def test_database_operations():
     for face_id, name, embedding in faces:
         print(f"  ID {face_id}: {name} (embedding shape: {embedding.shape})")
     
-    print("\n✓ Database test complete!")
+    print("\n[OK] Database test complete!")
+    db.close()
+
+
+def test_automated_scenarios():
+    """Automated tests for multi-frame enrollment and partial occlusion"""
+    print("=" * 60)
+    print("TESTING AUTOMATED SCENARIOS")
+    print("=" * 60)
+    
+    import numpy as np
+    
+    # Use an in-memory or temporary database for testing if possible, 
+    # but since VisionMateDB uses sqlite3, we will use the default and just clean up.
+    db = VisionMateDB()
+    recognizer = FaceRecognizer(db)
+    
+    # 1. Multi-sample enrollment
+    print("\n--- Test 1: Multi-sample enrollment ---")
+    test_name = "test_person_xyz"
+    recognizer.start_enrollment(test_name)
+    
+    # Create dummy embeddings to mock detection
+    # InsightFace embeddings are 512-d
+    base_embedding = np.random.randn(512).astype(np.float32)
+    base_embedding /= np.linalg.norm(base_embedding)
+    
+    for i in range(5):
+        # Slightly perturb the embedding to simulate different angles
+        perturbed = base_embedding + np.random.randn(512).astype(np.float32) * 0.05
+        perturbed /= np.linalg.norm(perturbed)
+        
+        # Add directly to buffer since we can't easily fake the detect_faces call without a real image
+        recognizer.enrollment_buffer['embeddings'].append(perturbed)
+        
+    success = recognizer.finish_enrollment()
+    assert success, "Multi-sample enrollment failed"
+    print("[OK] Multi-sample enrollment succeeded")
+    
+    # 2. Matching against multiple stored embeddings
+    print("\n--- Test 2: Matching against multiple stored embeddings ---")
+    # A new query embedding close to the third enrolled embedding
+    query_embedding = recognizer.known_faces[-3][2] + np.random.randn(512).astype(np.float32) * 0.01
+    query_embedding /= np.linalg.norm(query_embedding)
+    
+    name, distance, margin = recognizer._match_face(query_embedding)
+    print(f"Match result: {name}, distance: {distance:.3f}, margin: {margin:.3f}")
+    assert name == test_name, f"Expected {test_name}, got {name}"
+    print("[OK] Successfully matched against multiple stored embeddings")
+    
+    # 3. Partial-occlusion scenario (mock low-quality bbox)
+    print("\n--- Test 3: Partial-occlusion / Low-quality rejection ---")
+    # We will pass a dummy frame to detect_faces. Since we can't fake insightface output easily,
+    # we'll test the logic in recognize_faces that rejects small faces.
+    # We'll mock detect_faces to return a small face and a normal face.
+    original_detect = recognizer.detect_faces
+    
+    def mock_detect_faces(frame):
+        return [
+            {'bbox': [0, 0, 20, 20], 'embedding': query_embedding, 'confidence': 0.9},  # Too small (20x20)
+            {'bbox': [100, 100, 200, 200], 'embedding': query_embedding, 'confidence': 0.9} # Normal (100x100)
+        ]
+    
+    
+    
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    # Actually wait, our recognize_faces calls detect_faces. BUT in our FaceRecognizer class,
+    # the small face rejection is inside detect_faces itself! 
+    # Let's mock the InsightFace app output instead.
+    
+    if recognizer.insightface_available:
+        class MockFace:
+            def __init__(self, bbox):
+                self.bbox = np.array(bbox)
+                self.normed_embedding = query_embedding
+                self.det_score = 0.9
+                
+        class MockApp:
+            def get(self, frame):
+                return [
+                    MockFace([0, 0, 20, 20]),
+                    MockFace([100, 100, 200, 200])
+                ]
+                
+        original_app = recognizer.app
+        recognizer.app = MockApp()
+        
+        faces = recognizer.detect_faces(dummy_frame)
+        assert len(faces) == 1, f"Expected 1 face to pass size check, got {len(faces)}"
+        assert faces[0]['bbox'] == [100, 100, 200, 200], "Wrong face passed size check"
+        print("[OK] Small/occluded face correctly rejected")
+        
+        recognizer.app = original_app
+    
+    recognizer.detect_faces = original_detect
+    
+    # Clean up database
+    # Find IDs for the test person
+    cursor = db.conn.cursor()
+    cursor.execute("DELETE FROM faces WHERE name = ?", (test_name,))
+    db.conn.commit()
+    print("[OK] Cleanup completed")
+    
+    print("\nAutomated scenarios passed!")
     db.close()
 
 
@@ -209,6 +312,8 @@ if __name__ == "__main__":
         test_face_enrollment()
         print("\n")
         test_face_recognition()
+    elif choice == '5':
+        test_automated_scenarios()
     else:
         print("Running database test...")
         test_database_operations()

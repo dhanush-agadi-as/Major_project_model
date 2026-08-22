@@ -16,20 +16,20 @@ def test_object_memory():
     print("Testing Object Memory System")
     print("=" * 60)
     
-    memory = ObjectMemory()
-    print("✓ Object memory initialized\n")
+    memory = ObjectMemory(); memory.delete_object("house keys"); memory.delete_object("test object"); memory.delete_object("work badge")
+    print("[OK] Object memory initialized\n")
     
     # Test 1: Start enrollment
     print("Test 1: Start enrollment for 'house keys'")
     try:
         memory.start_enrollment("house keys", "keys")
         progress = memory.get_enrollment_progress()
-        print(f"  ✓ Enrollment started")
+        print(f"  [OK] Enrollment started")
         print(f"    Active: {progress['active']}")
         print(f"    Object: {progress['custom_name']}")
         print(f"    Target: {progress['frames_needed']} frames\n")
     except Exception as e:
-        print(f"  ✗ Error: {e}\n")
+        print(f"  [FAIL] Error: {e}\n")
         return False
     
     # Test 2: Add enrollment frames with actual visual features
@@ -61,22 +61,22 @@ def test_object_memory():
         
         bbox = (center_x-40, center_y-25, center_x+40, center_y+25)
         num = memory.add_enrollment_frame(img, bbox)
-        print(f"  ✓ Frame {num}/{5} captured")
+        print(f"  [OK] Frame {num}/{5} captured")
     print()
     
     # Test 3: Finish enrollment
     print("Test 3: Finishing enrollment")
     success = memory.finish_enrollment()
     if success:
-        print("  ✓ Object enrolled successfully\n")
+        print("  [OK] Object enrolled successfully\n")
     else:
-        print("  ✗ Enrollment failed\n")
+        print("  [FAIL] Enrollment failed\n")
         return False
     
     # Test 4: List remembered objects
     print("Test 4: Listing remembered objects")
     objects = memory.list_remembered_objects()
-    print(f"  ✓ Found {len(objects)} objects:")
+    print(f"  [OK] Found {len(objects)} objects:")
     for name, yolo_class in objects:
         print(f"    - '{name}' (class: {yolo_class})")
     print()
@@ -101,8 +101,8 @@ def test_object_memory():
     
     result = memory.recognize_object(test_img, (270, 210, 350, 260), "keys")
     if result:
-        custom_name, confidence = result
-        print(f"  ✓ Recognized: '{custom_name}' (confidence: {confidence:.2%})")
+        custom_name, confidence, tier = result
+        print(f"  [OK] Recognized: '{custom_name}' (confidence: {confidence:.2%})")
     else:
         print(f"  ℹ Not recognized (below threshold or no match)")
     print()
@@ -118,23 +118,23 @@ def test_object_memory():
         confidence=0.85
     )
     if success:
-        print("  ✓ Sighting recorded\n")
+        print("  [OK] Sighting recorded\n")
     else:
-        print("  ✗ Failed to record sighting\n")
+        print("  [FAIL] Failed to record sighting\n")
         return False
     
     # Test 7: Query location
     print("Test 7: Querying object location")
     location = memory.get_object_location("house keys")
     if location:
-        print(f"  ✓ Last seen:")
+        print(f"  [OK] Last seen:")
         print(f"    Location: {location['location']}")
         print(f"    GPS: ({location['gps_lat']}, {location['gps_lon']})")
         print(f"    Nearby: {location['context'].get('nearby_objects', [])}")
         print(f"    Confidence: {location['confidence']:.2%}")
         print(f"    Time: {location['timestamp']}\n")
     else:
-        print("  ✗ No location found\n")
+        print("  [FAIL] No location found\n")
         return False
     
     # Test 8: Update sighting again (test update logic)
@@ -148,7 +148,7 @@ def test_object_memory():
         confidence=0.92
     )
     location2 = memory.get_object_location("house keys")
-    print(f"  ✓ New location: {location2['location']}\n")
+    print(f"  [OK] New location: {location2['location']}\n")
     
     # Test 9: Enroll second object
     print("Test 9: Enrolling second object 'work badge'")
@@ -156,11 +156,11 @@ def test_object_memory():
     for i in range(3):
         img = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
         # Add some texture
-        cv2.putText(img, "BADGE", (250, 240), cv2.FONT_HERSHEY_BOLD, 2, (255, 255, 0), 3)
+        cv2.putText(img, "BADGE", (250, 240), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 0), 3)
         memory.add_enrollment_frame(img, (200, 200, 400, 280))
     memory.finish_enrollment()
     objects = memory.list_remembered_objects()
-    print(f"  ✓ Total objects: {len(objects)}")
+    print(f"  [OK] Total objects: {len(objects)}")
     for name, yolo_class in objects:
         print(f"    - {name} ({yolo_class})")
     print()
@@ -170,7 +170,7 @@ def test_object_memory():
     memory.delete_object("house keys")
     memory.delete_object("work badge")
     objects = memory.list_remembered_objects()
-    print(f"  ✓ Remaining objects: {len(objects)}\n")
+    print(f"  [OK] Remaining objects: {len(objects)}\n")
     
     # Test 11: Try duplicate enrollment (should fail)
     print("Test 11: Testing duplicate enrollment prevention")
@@ -181,16 +181,16 @@ def test_object_memory():
     
     try:
         memory.start_enrollment("test object", "bottle")  # Should raise error
-        print("  ✗ Duplicate allowed (should have failed)\n")
+        print("  [FAIL] Duplicate allowed (should have failed)\n")
         return False
     except ValueError as e:
-        print(f"  ✓ Duplicate prevented: {e}\n")
+        print(f"  [OK] Duplicate prevented: {e}\n")
     
     # Cleanup
     memory.delete_object("test object")
     
     print("=" * 60)
-    print("All tests passed! ✓")
+    print("All tests passed! [OK]")
     print("=" * 60)
     return True
 
@@ -200,7 +200,7 @@ if __name__ == "__main__":
         success = test_object_memory()
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"\n✗ Test failed with error: {e}")
+        print(f"\n[FAIL] Test failed with error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

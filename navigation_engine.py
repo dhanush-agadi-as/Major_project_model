@@ -279,7 +279,7 @@ if __name__ == "__main__":
     )
     
     if success:
-        print("✓ Route loaded!")
+        print("[OK] Route loaded!")
         
         progress = engine.get_progress()
         print(f"\nRoute: {progress['total_distance']}, {progress['total_duration']}")
@@ -299,14 +299,14 @@ if __name__ == "__main__":
                     print("  🔊 ANNOUNCE: " + status['instruction'])
             
             elif status['status'] == 'arrived':
-                print(f"\n✓ {status['message']}")
+                print(f"\n[OK] {status['message']}")
                 break
             
             # Advance mock GPS position
             gps.advance_mock_position()
             time.sleep(0.5)
     else:
-        print("✗ Failed to start navigation")
+        print("[FAIL] Failed to start navigation")
     
     gps.stop()
-    print("\n✓ Navigation engine test complete!")
+    print("\n[OK] Navigation engine test complete!")

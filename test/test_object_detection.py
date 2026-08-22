@@ -22,7 +22,7 @@ def test_object_detection_webcam():
     
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("✗ Could not open webcam, testing with static image instead")
+        print("[FAIL] Could not open webcam, testing with static image instead")
         test_object_detection_static()
         return
     
@@ -73,7 +73,7 @@ def test_object_detection_webcam():
     cap.release()
     cv2.destroyAllWindows()
     
-    print(f"\n\n✓ Test complete!")
+    print(f"\n\n[OK] Test complete!")
     print(f"  Total frames: {frame_count}")
     print(f"  Average FPS: {fps:.2f}")
 
@@ -102,7 +102,7 @@ def test_object_detection_static():
     # Detect objects
     detections = detector.detect(frame)
     
-    print(f"\n✓ Detection complete!")
+    print(f"\n[OK] Detection complete!")
     print(f"  Found {len(detections)} objects:")
     
     for i, det in enumerate(detections, 1):
@@ -126,7 +126,7 @@ def test_specific_classes():
     
     print(f"\nTarget classes: {detector.target_classes}")
     print("\nThis test verifies that only target classes are detected.")
-    print("✓ Detector configured correctly!")
+    print("[OK] Detector configured correctly!")
 
 
 if __name__ == "__main__":

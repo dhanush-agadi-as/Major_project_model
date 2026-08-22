@@ -61,14 +61,14 @@ class FreeNavigationDemo:
         self.last_obstacle_check = 0
         self.current_step = 0
         
-        logger.info("✓ All systems initialized (100% FREE)!")
+        logger.info("[OK] All systems initialized (100% FREE)!")
     
     def start(self):
         """Start all background services"""
         logger.info("Starting services...")
         self.gps.start()
         self.ultrasonic.start()
-        logger.info("✓ Services started!")
+        logger.info("[OK] Services started!")
     
     def stop(self):
         """Stop all services"""
@@ -77,7 +77,7 @@ class FreeNavigationDemo:
         self.ultrasonic.stop()
         self.cap.release()
         cv2.destroyAllWindows()
-        logger.info("✓ Services stopped!")
+        logger.info("[OK] Services stopped!")
     
     def start_navigation(self, destination: str):
         """Start navigation to destination"""
@@ -171,7 +171,7 @@ class FreeNavigationDemo:
             else:
                 # Arrived!
                 self.audio.speak("You have arrived at your destination")
-                logger.info("✓ Arrived!")
+                logger.info("[OK] Arrived!")
                 self.navigating = False
     
     def _haversine_distance(self, lat1, lon1, lat2, lon2):
@@ -216,7 +216,7 @@ class FreeNavigationDemo:
                 logger.warning(f"🚨 OBSTACLE: {highest_priority['message']}")
             elif highest_priority['priority'] == 2:  # HIGH WARNING
                 self.audio.speak(highest_priority['message'])
-                logger.info(f"⚠️  OBSTACLE: {highest_priority['message']}")
+                logger.info(f"[WARN]️  OBSTACLE: {highest_priority['message']}")
     
     def run(self):
         """Main demo loop"""
@@ -313,7 +313,7 @@ class FreeNavigationDemo:
         
         finally:
             self.stop()
-            print("\n✓ Demo complete!")
+            print("\n[OK] Demo complete!")
 
 
 if __name__ == "__main__":

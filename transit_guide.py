@@ -306,7 +306,7 @@ if __name__ == "__main__":
     
     print("\nChecking if complete...")
     if guide.is_complete():
-        print("  ✓ Transit step complete!")
+        print("  [OK] Transit step complete!")
     
     gps.stop()
-    print("\n✓ Transit guide test complete!")
+    print("\n[OK] Transit guide test complete!")

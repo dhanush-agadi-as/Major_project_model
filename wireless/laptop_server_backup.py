@@ -84,33 +84,33 @@ class LaptopMLServer:
             # Object detection
             logger.info("Loading YOLOv8 model...")
             self.object_detector = ObjectDetector()
-            logger.info("✓ Object Detector ready")
+            logger.info("[OK] Object Detector ready")
             
             # Face recognition
             logger.info("Loading InsightFace model...")
             self.face_recognizer = FaceRecognizer()
-            logger.info("✓ Face Recognizer ready")
+            logger.info("[OK] Face Recognizer ready")
             
             # Item tracking
             self.item_tracker = ItemTracker()
-            logger.info("✓ Item Tracker ready")
+            logger.info("[OK] Item Tracker ready")
             
             # Object memory
             self.object_memory = ObjectMemory()
-            logger.info("✓ Object Memory ready")
+            logger.info("[OK] Object Memory ready")
             
             # Spatial navigation
             self.spatial_navigator = SpatialNavigator(frame_width=640, frame_height=480)
-            logger.info("✓ Spatial Navigator ready")
+            logger.info("[OK] Spatial Navigator ready")
             
             # GPS navigation
             self.gps_tracker = GPSTracker(mock_mode=True)
             self.osm_navigator = OSMNavigator()
             self.navigation_engine = NavigationEngine(self.gps_tracker, self.osm_navigator)
-            logger.info("✓ Navigation Engine ready")
+            logger.info("[OK] Navigation Engine ready")
             
             logger.info("\n" + "="*60)
-            logger.info("✓ ALL ML MODELS LOADED SUCCESSFULLY!")
+            logger.info("[OK] ALL ML MODELS LOADED SUCCESSFULLY!")
             logger.info("="*60)
             
             return True
@@ -125,7 +125,7 @@ class LaptopMLServer:
         """Handle incoming connection from Raspberry Pi"""
         client_ip = websocket.remote_address[0]
         logger.info(f"\n{'='*60}")
-        logger.info(f"✓ Raspberry Pi connected from: {client_ip}")
+        logger.info(f"[OK] Raspberry Pi connected from: {client_ip}")
         logger.info(f"{'='*60}")
         logger.info(f"\nKEYBOARD CONTROLS (click on the display window first):")
         logger.info(f"  Q = Quit display")
@@ -295,7 +295,7 @@ class LaptopMLServer:
             if self.enrollment_frames >= 3:
                 success = self.object_memory.finish_enrollment()
                 if success:
-                    logger.info(f"✓ Object '{self.enrollment_name}' enrolled successfully!")
+                    logger.info(f"[OK] Object '{self.enrollment_name}' enrolled successfully!")
                 else:
                     logger.error(f"Enrollment failed for '{self.enrollment_name}'")
                 self.enrollment_active = False
@@ -308,7 +308,7 @@ class LaptopMLServer:
         if name:
             success = self.face_recognizer.enroll_face(frame, name)
             if success:
-                logger.info(f"✓ Face registered: {name}")
+                logger.info(f"[OK] Face registered: {name}")
             else:
                 logger.warning("No face detected in current frame. Make sure a face is visible.")
     
@@ -352,12 +352,13 @@ class LaptopMLServer:
                         frame, tuple(obj['bbox']), obj['class_name']
                     )
                     if match:
-                        custom_name, confidence = match
+                        custom_name, confidence, match_tier = match
                         result['remembered'].append({
                             'name': custom_name,
                             'class': obj['class_name'],
                             'confidence': float(confidence),
-                            'bbox': [int(x) for x in obj['bbox']]
+                            'bbox': [int(x) for x in obj['bbox']],
+                            'tier': match_tier
                         })
                 except Exception:
                     pass

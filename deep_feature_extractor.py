@@ -138,7 +138,7 @@ if __name__ == "__main__":
     print("=" * 60)
     
     extractor = DeepFeatureExtractor(model_name='mobilenet_v2')
-    print(f"✓ Extractor initialized")
+    print(f"[OK] Extractor initialized")
     print(f"  Embedding size: {extractor.embedding_size}D")
     print(f"  Device: {extractor.device}")
     
@@ -155,12 +155,12 @@ if __name__ == "__main__":
     emb1 = extractor.extract_embedding(img1)
     emb2 = extractor.extract_embedding(img2)
     
-    print(f"✓ Embedding 1 shape: {emb1.shape}")
-    print(f"✓ Embedding 2 shape: {emb2.shape}")
+    print(f"[OK] Embedding 1 shape: {emb1.shape}")
+    print(f"[OK] Embedding 2 shape: {emb2.shape}")
     
     # Compute similarity
     similarity = extractor.compute_similarity(emb1, emb2)
-    print(f"✓ Similarity: {similarity:.3f}")
+    print(f"[OK] Similarity: {similarity:.3f}")
     
     print("\n" + "=" * 60)
     print("Deep feature extractor is ready!")

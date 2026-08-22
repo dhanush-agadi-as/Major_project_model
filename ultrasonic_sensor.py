@@ -195,13 +195,13 @@ if __name__ == "__main__":
             print(f"  Reading {i+1}: {distance:.1f} cm - {level.upper()}")
             
             if level == 'emergency':
-                print(f"    ⚠️  EMERGENCY: Obstacle < 30 cm!")
+                print(f"    [WARN]️  EMERGENCY: Obstacle < 30 cm!")
             elif level == 'warning':
-                print(f"    ⚠️  WARNING: Obstacle < 60 cm")
+                print(f"    [WARN]️  WARNING: Obstacle < 60 cm")
         else:
             print(f"  Reading {i+1}: Sensor unavailable")
         
         time.sleep(0.5)
     
     sensor.stop()
-    print("\n✓ Ultrasonic sensor test complete!")
+    print("\n[OK] Ultrasonic sensor test complete!")

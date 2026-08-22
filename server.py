@@ -37,7 +37,7 @@ object_memory = ObjectMemory(db)
 audio = get_audio_feedback(use_gtts=False)
 
 print("=" * 60)
-print("✓ ALL MODULES LOADED SUCCESSFULLY")
+print("[OK] ALL MODULES LOADED SUCCESSFULLY")
 print("=" * 60)
 
 # Performance tracking
@@ -115,21 +115,30 @@ def process_frame():
             bbox = (obj['bbox'][0], obj['bbox'][1], obj['bbox'][2], obj['bbox'][3])
             match = object_memory.recognize_object(frame, bbox, obj['class_name'])
             if match:
-                custom_name, confidence = match
+                custom_name, confidence, match_tier = match
                 remembered_detections.append({
                     'custom_name': custom_name,
                     'yolo_class': obj['class_name'],
                     'confidence': confidence,
-                    'bbox': obj['bbox']
+                    'bbox': obj['bbox'],
+                    'tier': match_tier
                 })
-                # Update sighting
-                nearby_objects = [o['class_name'] for o in objects if o != obj]
-                object_memory.update_object_sighting(
-                    custom_name=custom_name,
-                    image=frame,
-                    nearby_objects=nearby_objects[:5],  # Limit context
-                    confidence=confidence
-                )
+                
+                if match_tier == 'high':
+                    # Update sighting automatically
+                    nearby_objects = [o['class_name'] for o in objects if o != obj]
+                    object_memory.update_object_sighting(
+                        custom_name=custom_name,
+                        image=frame,
+                        nearby_objects=nearby_objects[:5],  # Limit context
+                        gps_lat=gps_tracker.current_position[0] if gps_tracker.current_position else None,
+                        gps_lon=gps_tracker.current_position[1] if gps_tracker.current_position else None,
+                        confidence=confidence
+                    )
+                elif match_tier == 'ambiguous':
+                    # Trigger voice prompt for confirmation
+                    audio.speak_social(f"Is this your {custom_name}?")
+                    
         results['remembered_objects'] = remembered_detections
         
         # 2. Face Recognition
@@ -415,16 +424,15 @@ def generate_audio_feedback(objects, faces, traffic_signal, item_updates, rememb
     """
     messages = []
     
-    # 1. EMERGENCY: Traffic Signal - DISABLED (too many false positives)
-    # if traffic_signal:
-    #     if traffic_signal['signal_type'] == 'RED':
-    #         message = "STOP - Red Light detected"
-    #         audio.speak_emergency(message)
-    #         messages.append({'priority': 1, 'type': 'emergency', 'message': message})
-    #     elif traffic_signal['signal_type'] == 'GREEN':
-    #         message = "Green Light - Safe to cross"
-    #         audio.speak_emergency(message)
-    #         messages.append({'priority': 1, 'type': 'emergency', 'message': message})
+    # 1. EMERGENCY: Traffic Signal - DISABLED (old implementation)
+    # 1. EMERGENCY: Critical outdoor safety objects (using YOLO classes)
+    emergency_classes = ['car', 'bus', 'truck', 'motorcycle', 'traffic light', 'stop sign', 'bicycle']
+    for obj in objects:
+        if obj['class_name'] in emergency_classes:
+            message = f"Caution: {obj['class_name'].capitalize()} ahead"
+            audio.speak_emergency(message)
+            messages.append({'priority': 1, 'type': 'emergency', 'message': message})
+            break
     
     # 2. SOCIAL: Recognized faces
     for face in faces:
@@ -440,7 +448,7 @@ def generate_audio_feedback(objects, faces, traffic_signal, item_updates, rememb
         messages.append({'priority': 2, 'type': 'social', 'message': message})
     
     # 3. NAVIGATIONAL: Important objects (obstacles)
-    obstacle_classes = ['chair', 'sofa', 'person']
+    obstacle_classes = ['person', 'dog', 'cat', 'chair', 'couch', 'bed', 'dining table', 'tv', 'car', 'bicycle', 'motorcycle', 'bus', 'truck', 'fire hydrant', 'bench', 'potted plant', 'toilet']
     for obj in objects:
         if obj['class_name'] in obstacle_classes:
             message = f"{obj['class_name'].capitalize()} ahead"
@@ -469,6 +477,6 @@ if __name__ == '__main__':
     print(f"   GET /query_item?item=keys - Find item location")
     print(f"   GET /get_all_faces - List enrolled faces")
     print(f"   GET /health - Health check")
-    print(f"\n✓ Server ready!\n")
+    print(f"\n[OK] Server ready!\n")
     
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG, threaded=True)

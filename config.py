@@ -28,13 +28,25 @@ YOLO_CONFIDENCE = 0.5
 YOLO_IOU_THRESHOLD = 0.45
 YOLO_IMGSZ = 320  # Lowered further from 416 for CPU speed - trade-off is slightly reduced accuracy on small/distant objects
 YOLO_FRAME_SKIP = 3  # Run YOLO object detection every Nth frame instead of every frame (1 = every frame, 2 = every other frame)
-TARGET_CLASSES = ['person', 'chair', 'bottle', 'couch', 'tv', 'keys', 'cell phone', 'clock']  # 'couch' is COCO's 'sofa', 'clock' includes watches
+TARGET_CLASSES = [
+    'person', 'dog', 'cat',
+    'chair', 'couch', 'bed', 'dining table', 'toilet', 'tv',
+    'bottle', 'cup', 'cell phone', 'laptop', 'backpack', 'handbag', 
+    'umbrella', 'book', 'clock', 'scissors', 'remote', 'keyboard', 'mouse',
+    'bowl', 'wine glass', 'fork', 'knife', 'spoon', 'banana', 'apple', 
+    'sandwich', 'orange', 'pizza', 'donut', 'cake', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator',
+    'car', 'bicycle', 'motorcycle', 'bus', 'truck', 
+    'traffic light', 'fire hydrant', 'stop sign', 'bench', 'potted plant',
+    'sports ball', 'suitcase', 'vase',
+    'keys'
+]
 
 # Face Recognition Configuration
 FACE_RECOGNITION_THRESHOLD = 0.65  # Euclidean distance threshold (higher = more lenient)
 FACE_MODEL = "buffalo_l"  # InsightFace model
-# Lower values (even (160, 160)) can be tried for more speed at the cost of missing small/distant faces.
-FACE_DET_SIZE = (128, 128)  # Lowered further - getting close to the practical floor for reliable face detection, verify accuracy carefully after this change
+# Increased to (320, 320) to better handle partial faces and occlusions at the cost of slight latency.
+FACE_DET_SIZE = (320, 320)
+FACE_ENROLLMENT_FRAMES = 5  # Capture multiple frames across angles for robustness
 FACE_RECOGNITION_FRAME_INTERVAL = 14  # Increased further - noticeably slower to detect new faces appearing
 
 # Item Tracking Configuration
@@ -42,7 +54,9 @@ ITEM_TRACKING_TIMEOUT = 3.0  # seconds
 IOU_THRESHOLD = 0.3  # Minimum IoU to consider "inside"
 
 # Object Memory Configuration (Remember Objects Feature)
-OBJECT_MEMORY_MATCH_THRESHOLD = 0.62  # Middle ground based on real similarity data: true matches range 0.4-0.71, this is a compromise between false positives and false negatives
+# Replaced single threshold with three-tier confidence zone
+OBJECT_MATCH_HIGH_CONFIDENCE = 0.75  # Auto-confirm match and update location
+OBJECT_MATCH_AMBIGUOUS_LOW = 0.50  # Ask user to confirm
 OBJECT_ENROLLMENT_FRAMES = 10  # Increased from 5 - more frames averaged into the embedding should make it more robust to lighting/angle variation, which should raise genuine match confidence
 OBJECT_MATCH_COOLDOWN = 2.0  # seconds between announcing same object
 USE_DEEP_FEATURES = True  # Use deep learning embeddings (MobileNetV2) for much better recognition
@@ -81,6 +95,12 @@ NAVIGATION_UPDATE_INTERVAL = 5  # seconds - how often to check position
 GPS_MOCK_MODE = True  # Set to False when real GPS is connected
 GPS_PORT = "/dev/ttyUSB0"  # Serial port for GPS module (adjust for your system)
 GPS_BAUDRATE = 9600
+GPS_USE_IP_GEOLOCATION = True  # Set True to use free IP-based geolocation instead of mock/serial GPS
+IP_GEOLOCATION_CACHE_SECONDS = 300  # How long to cache a lookup before re-querying ip-api.com
+GPS_USE_WIFI_GEOLOCATION = False  # WiFi layer removed due to MLS shutdown
+GPS_MANUAL_OVERRIDE_ENABLED = False  # Set True to pin a fixed location for indoor/bench testing (ignores all network lookups)
+GPS_MANUAL_OVERRIDE_LAT = 12.926516  # Latitude for manual override (default: RR Nagar, Bangalore -- change as needed)
+GPS_MANUAL_OVERRIDE_LON = 77.526422  # Longitude for manual override
 
 # Ultrasonic Sensor Configuration
 ULTRASONIC_MOCK_MODE = True  # Set to False when ESP32 is connected

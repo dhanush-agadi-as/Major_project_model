@@ -7,6 +7,7 @@ No API keys required, unlimited usage
 import requests
 import logging
 import time
+import math
 from typing import Dict, List, Optional, Tuple
 import re
 
@@ -73,7 +74,7 @@ class OSMNavigator:
                 lon = float(data[0]['lon'])
                 display_name = data[0]['display_name']
                 
-                logger.info(f"✓ Found: {display_name}")
+                logger.info(f"[OK] Found: {display_name}")
                 logger.info(f"  Coordinates: {lat:.6f}, {lon:.6f}")
                 
                 return (lat, lon)
@@ -129,7 +130,7 @@ class OSMNavigator:
             # Parse into our format
             parsed_route = self._parse_route(route)
             
-            logger.info(f"✓ Route found: {parsed_route['total_distance']}, {parsed_route['total_duration']}")
+            logger.info(f"[OK] Route found: {parsed_route['total_distance']}, {parsed_route['total_duration']}")
             
             return parsed_route
             
@@ -199,6 +200,40 @@ class OSMNavigator:
         else:
             return f"Continue on {name}"
     
+    def calculate_straight_line(self, origin: Tuple[float, float], destination: Tuple[float, float]) -> Dict:
+        """
+        Calculate straight-line distance and bearing between two GPS points using the Haversine formula.
+        Does NOT call any external API - pure math, for quick 'how far and which way' queries
+        that don't need full road routing (e.g. finding a remembered object).
+        Returns dict with: distance_meters (float), direction (str, using existing _get_direction), 
+        formatted_distance (str, using existing _format_distance)
+        """
+        lat1, lon1 = origin
+        lat2, lon2 = destination
+        
+        R = 6371e3  # Earth radius in meters
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        delta_phi = math.radians(lat2 - lat1)
+        delta_lambda = math.radians(lon2 - lon1)
+
+        a = math.sin(delta_phi / 2.0) ** 2 + \
+            math.cos(phi1) * math.cos(phi2) * \
+            math.sin(delta_lambda / 2.0) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        distance = R * c
+
+        y = math.sin(delta_lambda) * math.cos(phi2)
+        x = math.cos(phi1) * math.sin(phi2) - \
+            math.sin(phi1) * math.cos(phi2) * math.cos(delta_lambda)
+        bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
+
+        return {
+            'distance_meters': distance,
+            'direction': self._get_direction(bearing),
+            'formatted_distance': self._format_distance(distance)
+        }
+
     def _get_direction(self, bearing: float) -> str:
         """Convert bearing to cardinal direction"""
         directions = ['north', 'northeast', 'east', 'southeast', 
@@ -278,11 +313,11 @@ if __name__ == "__main__":
     print("\n1. Testing Geocoding...")
     majestic = nav.geocode_address("Majestic, Bangalore, India")
     if majestic:
-        print(f"   ✓ Majestic coordinates: {majestic[0]:.6f}, {majestic[1]:.6f}")
+        print(f"   [OK] Majestic coordinates: {majestic[0]:.6f}, {majestic[1]:.6f}")
     
     indiranagar = nav.geocode_address("Indiranagar, Bangalore, India")
     if indiranagar:
-        print(f"   ✓ Indiranagar coordinates: {indiranagar[0]:.6f}, {indiranagar[1]:.6f}")
+        print(f"   [OK] Indiranagar coordinates: {indiranagar[0]:.6f}, {indiranagar[1]:.6f}")
     
     # Test 2: Routing
     if majestic and indiranagar:
@@ -291,7 +326,7 @@ if __name__ == "__main__":
         
         if route:
             nav.current_route = route
-            print(f"   ✓ Route found!")
+            print(f"   [OK] Route found!")
             print(f"   Distance: {route['total_distance']}")
             print(f"   Duration: {route['total_duration']}")
             print(f"   Steps: {len(route['steps'])}")
@@ -304,5 +339,5 @@ if __name__ == "__main__":
                 print(f"   ... and {len(route['steps']) - 5} more steps")
     
     print("\n" + "="*60)
-    print("✓ Test complete! No API keys needed, unlimited usage!")
+    print("[OK] Test complete! No API keys needed, unlimited usage!")
     print("="*60)

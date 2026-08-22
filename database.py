@@ -329,6 +329,6 @@ class VisionMateDB:
 if __name__ == "__main__":
     # Quick test
     db = VisionMateDB()
-    print("✓ Database initialized successfully")
+    print("[OK] Database initialized successfully")
     print(f"Database location: {db.db_path}")
     db.close()

@@ -34,18 +34,18 @@ def test_health_endpoint():
         
         if response.status_code == 200:
             data = response.json()
-            print("\n✓ Server is healthy!")
+            print("\n[OK] Server is healthy!")
             print(f"  Status: {data['status']}")
             print(f"  FPS: {data['fps']}")
             print(f"  Frames processed: {data['frames_processed']}")
             print(f"  Uptime: {data['uptime_seconds']}s")
             return True
         else:
-            print(f"\n✗ Health check failed: {response.status_code}")
+            print(f"\n[FAIL] Health check failed: {response.status_code}")
             return False
             
     except requests.exceptions.ConnectionError:
-        print("\n✗ Could not connect to server!")
+        print("\n[FAIL] Could not connect to server!")
         print("Make sure the server is running: python server.py")
         return False
 
@@ -59,7 +59,7 @@ def test_process_frame_endpoint():
     # Create test frame
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("\n⚠ No webcam, using blank frame")
+        print("\n[WARN] No webcam, using blank frame")
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
     else:
         ret, frame = cap.read()
@@ -83,7 +83,7 @@ def test_process_frame_endpoint():
         
         if response.status_code == 200:
             data = response.json()
-            print("\n✓ Frame processed successfully!")
+            print("\n[OK] Frame processed successfully!")
             print(f"  Objects detected: {len(data['objects'])}")
             print(f"  Faces detected: {len(data['faces'])}")
             print(f"  Traffic signal: {data['traffic_signal']}")
@@ -103,12 +103,12 @@ def test_process_frame_endpoint():
             
             return True
         else:
-            print(f"\n✗ Request failed: {response.status_code}")
+            print(f"\n[FAIL] Request failed: {response.status_code}")
             print(response.json())
             return False
             
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         return False
 
 
@@ -122,7 +122,7 @@ def test_enroll_face_endpoint():
     cap = cv2.VideoCapture(0)
     
     if not cap.isOpened():
-        print("✗ Could not open webcam")
+        print("[FAIL] Could not open webcam")
         return False
     
     print("Position yourself in frame and press SPACE to capture")
@@ -142,7 +142,7 @@ def test_enroll_face_endpoint():
     
     name = input("\nEnter name for enrollment: ").strip()
     if not name:
-        print("✗ No name provided")
+        print("[FAIL] No name provided")
         return False
     
     # Encode and send
@@ -159,15 +159,15 @@ def test_enroll_face_endpoint():
         
         if response.status_code == 200:
             data = response.json()
-            print(f"\n✓ {data['message']}")
+            print(f"\n[OK] {data['message']}")
             return True
         else:
-            print(f"\n✗ Enrollment failed: {response.status_code}")
+            print(f"\n[FAIL] Enrollment failed: {response.status_code}")
             print(response.json())
             return False
             
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         return False
 
 
@@ -184,18 +184,18 @@ def test_query_item_endpoint():
         
         if response.status_code == 200:
             data = response.json()
-            print(f"\n✓ Query result:")
+            print(f"\n[OK] Query result:")
             print(f"  Item: {data['item']}")
             print(f"  Found: {data['found']}")
             print(f"  Location: {data['location']}")
             print(f"  Message: {data['message']}")
             return True
         else:
-            print(f"\n✗ Query failed: {response.status_code}")
+            print(f"\n[FAIL] Query failed: {response.status_code}")
             return False
             
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         return False
 
 
@@ -210,16 +210,16 @@ def test_get_all_faces_endpoint():
         
         if response.status_code == 200:
             data = response.json()
-            print(f"\n✓ Found {data['count']} enrolled faces:")
+            print(f"\n[OK] Found {data['count']} enrolled faces:")
             for face in data['faces']:
                 print(f"  - {face['name']} (ID: {face['id']})")
             return True
         else:
-            print(f"\n✗ Request failed: {response.status_code}")
+            print(f"\n[FAIL] Request failed: {response.status_code}")
             return False
             
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n[FAIL] Error: {e}")
         return False
 
 
@@ -248,13 +248,13 @@ def test_performance():
             )
             if response.status_code == 200:
                 success_count += 1
-                print(f"  Request {i+1}/{num_requests}: ✓", end='\r')
+                print(f"  Request {i+1}/{num_requests}: [OK]", end='\r')
         except:
-            print(f"  Request {i+1}/{num_requests}: ✗")
+            print(f"  Request {i+1}/{num_requests}: [FAIL]")
     
     elapsed = time.time() - start_time
     
-    print(f"\n\n✓ Performance test complete!")
+    print(f"\n\n[OK] Performance test complete!")
     print(f"  Successful requests: {success_count}/{num_requests}")
     print(f"  Total time: {elapsed:.2f}s")
     print(f"  Average latency: {elapsed/num_requests:.3f}s per request")
@@ -264,12 +264,12 @@ def test_performance():
 if __name__ == "__main__":
     print("\nVISIONMATE API SERVER TEST SUITE")
     print("=" * 60)
-    print("\n⚠ IMPORTANT: Server must be running!")
+    print("\n[WARN] IMPORTANT: Server must be running!")
     print("Start server in another terminal: python server.py\n")
     
     # Check if server is running
     if not test_health_endpoint():
-        print("\n✗ Server is not running. Please start the server first.")
+        print("\n[FAIL] Server is not running. Please start the server first.")
         sys.exit(1)
     
     print("\n" + "=" * 60)

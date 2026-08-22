@@ -63,14 +63,14 @@ class NavigationDemo:
         self.last_nav_update = 0
         self.last_obstacle_check = 0
         
-        logger.info("✓ All systems initialized!")
+        logger.info("[OK] All systems initialized!")
     
     def start(self):
         """Start all background services"""
         logger.info("Starting services...")
         self.gps.start()
         self.ultrasonic.start()
-        logger.info("✓ Services started!")
+        logger.info("[OK] Services started!")
     
     def stop(self):
         """Stop all services"""
@@ -79,7 +79,7 @@ class NavigationDemo:
         self.ultrasonic.stop()
         self.cap.release()
         cv2.destroyAllWindows()
-        logger.info("✓ Services stopped!")
+        logger.info("[OK] Services stopped!")
     
     def start_navigation(self, destination: str):
         """Start navigation to destination"""
@@ -133,7 +133,7 @@ class NavigationDemo:
         
         elif status['status'] == 'arrived':
             self.audio.speak(status['message'])
-            logger.info("✓ Arrived at destination!")
+            logger.info("[OK] Arrived at destination!")
             self.navigating = False
         
         elif status['status'] == 'off_route':
@@ -166,7 +166,7 @@ class NavigationDemo:
                 logger.warning(f"🚨 OBSTACLE: {highest_priority['message']}")
             elif highest_priority['priority'] == 2:  # HIGH WARNING
                 self.audio.speak(highest_priority['message'])
-                logger.info(f"⚠️  OBSTACLE: {highest_priority['message']}")
+                logger.info(f"[WARN]️  OBSTACLE: {highest_priority['message']}")
     
     def run(self):
         """Main demo loop"""
@@ -258,7 +258,7 @@ class NavigationDemo:
         
         finally:
             self.stop()
-            print("\n✓ Demo complete!")
+            print("\n[OK] Demo complete!")
 
 
 if __name__ == "__main__":

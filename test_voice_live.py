@@ -24,7 +24,7 @@ def test_live_voice():
     
     print("\nInitializing microphone...")
     if not voice_system.initialize():
-        print("✗ Failed to initialize microphone")
+        print("[FAIL] Failed to initialize microphone")
         print("\nPossible issues:")
         print("  - No microphone detected")
         print("  - Microphone permissions denied")
@@ -33,7 +33,7 @@ def test_live_voice():
     
     voice_system.start()
     
-    print("\n✓ Voice system ready!")
+    print("\n[OK] Voice system ready!")
     print("\nTest Plan:")
     print("  1. When prompted, say a command")
     print("  2. System will recognize and parse it")
@@ -41,21 +41,21 @@ def test_live_voice():
     
     # Register test handlers
     def handle_remember(params):
-        print(f"\n✓ REMEMBER command recognized!")
+        print(f"\n[OK] REMEMBER command recognized!")
         print(f"   Object: {params.get('object_name', 'unknown')}")
     
     def handle_find(params):
-        print(f"\n✓ FIND command recognized!")
+        print(f"\n[OK] FIND command recognized!")
         print(f"   Object: {params.get('object_name', 'unknown')}")
     
     def handle_navigate(params):
-        print(f"\n✓ NAVIGATE command recognized!")
+        print(f"\n[OK] NAVIGATE command recognized!")
     
     def handle_stop_navigate(params):
-        print(f"\n✓ STOP NAVIGATION command recognized!")
+        print(f"\n[OK] STOP NAVIGATION command recognized!")
     
     def handle_list(params):
-        print(f"\n✓ LIST command recognized!")
+        print(f"\n[OK] LIST command recognized!")
     
     voice_system.register_command_handler('remember', handle_remember)
     voice_system.register_command_handler('find', handle_find)
@@ -87,7 +87,7 @@ def test_live_voice():
         print("\n\nTest interrupted")
     finally:
         voice_system.stop()
-        print("\n✓ Voice system stopped")
+        print("\n[OK] Voice system stopped")
     
     print("\n" + "=" * 70)
     print("Test complete!")

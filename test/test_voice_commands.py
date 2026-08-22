@@ -42,14 +42,14 @@ def test_command_parser():
                 params_match = True
             
             if params_match:
-                print(f"✓ '{text}'")
+                print(f"[OK] '{text}'")
                 print(f"  -> Intent: {intent}, Params: {params}")
                 passed += 1
             else:
-                print(f"✗ '{text}'")
+                print(f"[FAIL] '{text}'")
                 print(f"  -> Expected params: {expected_params}, Got: {params}")
         else:
-            print(f"✗ '{text}'")
+            print(f"[FAIL] '{text}'")
             print(f"  -> Expected: {expected_intent}, Got: {intent}")
     
     print("\n" + "=" * 60)

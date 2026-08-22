@@ -79,12 +79,12 @@ def test_full_pipeline_webcam():
     voice_initialized = voice_system.initialize()
     if voice_initialized:
         voice_system.start()
-        print("✓ Voice command system initialized!")
+        print("[OK] Voice command system initialized!")
     else:
-        print("⚠ Voice command system not available (microphone issue)")
+        print("[WARN] Voice command system not available (microphone issue)")
         voice_system = None
     
-    print("✓ All modules initialized!")
+    print("[OK] All modules initialized!")
     
     print("\nOpening webcam...")
     print("Controls:")
@@ -100,7 +100,7 @@ def test_full_pipeline_webcam():
     print("  SPACEBAR - Voice command (button simulation)")
     print("  V - Toggle voice mode")
     if voice_initialized:
-        print("\n✓ Voice commands available:")
+        print("\n[OK] Voice commands available:")
         print("  - 'Remember this [object]' - Enroll object")
         print("  - 'Find my [object]' - Locate object")
         print("  - 'Navigate to [destination]' - GPS navigation")
@@ -115,7 +115,7 @@ def test_full_pipeline_webcam():
     try:
         cam.start()
     except RuntimeError as e:
-        print(f"✗ Could not open webcam: {e}")
+        print(f"[FAIL] Could not open webcam: {e}")
         db.close()
         return
     
@@ -126,12 +126,12 @@ def test_full_pipeline_webcam():
         if frame is not None:
             break
         if time.time() > deadline:
-            print("✗ No frame from webcam within 3 s")
+            print("[FAIL] No frame from webcam within 3 s")
             cam.stop()
             db.close()
             return
         time.sleep(0.01)
-    print("✓ Webcam opened (threaded, first frame received)")
+    print("[OK] Webcam opened (threaded, first frame received)")
     
     last_cam_fid = _fid  # track which frame_id the inference loop last processed
     
@@ -210,7 +210,7 @@ def test_full_pipeline_webcam():
                         'yolo_class': obj['class_name']
                     }
                     audio.speak_social(f"Starting enrollment for {custom_name}. Keep it steady.")
-                    print(f"✓ Voice: Enrolling '{custom_name}'")
+                    print(f"[OK] Voice: Enrolling '{custom_name}'")
                 except ValueError as e:
                     audio.speak_status(f"Error: {e}")
             else:
@@ -230,14 +230,14 @@ def test_full_pipeline_webcam():
                 nearby_str = f" near {', '.join(nearby)}" if nearby else ""
                 msg = f"Your {object_name} last seen{nearby_str}"
                 audio.speak_navigational(msg)
-                print(f"✓ Voice: {msg}")
+                print(f"[OK] Voice: {msg}")
             else:
                 # Try item tracker
                 loc = item_tracker.query_item_location(object_name)
                 if loc:
                     msg = f"Your {object_name} on the {loc}"
                     audio.speak_navigational(msg)
-                    print(f"✓ Voice: {msg}")
+                    print(f"[OK] Voice: {msg}")
                 else:
                     audio.speak_status(f"Haven't seen {object_name}")
         
@@ -247,7 +247,7 @@ def test_full_pipeline_webcam():
             if not navigation_enabled:
                 navigation_enabled = True
                 audio.speak_social("Navigation enabled")
-                print("✓ Voice: Navigation ON")
+                print("[OK] Voice: Navigation ON")
             else:
                 audio.speak_status("Navigation already active")
         
@@ -257,7 +257,7 @@ def test_full_pipeline_webcam():
             if navigation_enabled:
                 navigation_enabled = False
                 audio.speak_social("Navigation disabled")
-                print("✓ Voice: Navigation OFF")
+                print("[OK] Voice: Navigation OFF")
             else:
                 audio.speak_status("Navigation already off")
         
@@ -267,7 +267,7 @@ def test_full_pipeline_webcam():
             if remembered_list:
                 items = ", ".join([name for name, _ in remembered_list])
                 audio.speak_social(f"I remember: {items}")
-                print(f"✓ Voice: Listed {len(remembered_list)} items")
+                print(f"[OK] Voice: Listed {len(remembered_list)} items")
             else:
                 audio.speak_status("No items remembered yet")
         
@@ -285,27 +285,27 @@ def test_full_pipeline_webcam():
                 return
             
             audio.speak_social(f"Navigating to {destination}")
-            print(f"\n✓ Voice: Starting GPS navigation to {destination}")
+            print(f"\n[OK] Voice: Starting GPS navigation to {destination}")
             
             # Geocode destination
             dest_coords = osm_nav.geocode_address(destination + ", Bangalore, India")
             if not dest_coords:
                 audio.speak_status("Could not find destination")
-                print(f"✗ Geocoding failed for {destination}")
+                print(f"[FAIL] Geocoding failed for {destination}")
                 return
             
             # Get current position
             current_pos = gps_tracker.get_position()
             if not current_pos:
                 audio.speak_status("Waiting for GPS signal")
-                print("✗ No GPS signal")
+                print("[FAIL] No GPS signal")
                 return
             
             # Get directions
             route = osm_nav.get_directions(current_pos, dest_coords, mode='foot')
             if not route:
                 audio.speak_status("Could not find route")
-                print("✗ Routing failed")
+                print("[FAIL] Routing failed")
                 return
             
             # Store route and activate navigation
@@ -316,7 +316,7 @@ def test_full_pipeline_webcam():
             
             # Announce route
             audio.speak_social(f"Route found. {route['total_distance']}. {route['total_duration']}.")
-            print(f"✓ GPS Navigation started: {len(route['steps'])} steps")
+            print(f"[OK] GPS Navigation started: {len(route['steps'])} steps")
             print(f"  Distance: {route['total_distance']}")
             print(f"  Duration: {route['total_duration']}")
         
@@ -326,7 +326,7 @@ def test_full_pipeline_webcam():
             if gps_navigation_active:
                 gps_navigation_active = False
                 audio.speak_social("GPS navigation stopped")
-                print("✓ Voice: GPS navigation stopped")
+                print("[OK] Voice: GPS navigation stopped")
             else:
                 audio.speak_status("No GPS navigation active")
         
@@ -389,11 +389,12 @@ def test_full_pipeline_webcam():
                 bbox = (obj['bbox'][0], obj['bbox'][1], obj['bbox'][2], obj['bbox'][3])
                 match = object_memory.recognize_object(frame, bbox, obj['class_name'])
                 if match:
-                    custom_name, confidence = match
+                    custom_name, confidence, match_tier = match
                     remembered_objects.append({
                         'custom_name': custom_name,
                         'confidence': confidence,
-                        'bbox': obj['bbox']
+                        'bbox': obj['bbox'],
+                        'tier': match_tier
                     })
                     
                     # Map this object to its custom name
@@ -419,11 +420,15 @@ def test_full_pipeline_webcam():
                     # Add recognized face names to nearby list
                     nearby.extend(last_recognized_faces)
                     
+                    current_gps = gps_tracker.get_position()
+                    
                     object_memory.update_object_sighting(
                         custom_name=custom_name,
                         image=frame,
                         nearby_objects=nearby[:5],
-                        confidence=confidence
+                        confidence=confidence,
+                        gps_lat=current_gps[0] if current_gps else None,
+                        gps_lon=current_gps[1] if current_gps else None
                     )
             last_remembered_objects = remembered_objects
             last_object_to_custom_name = object_to_custom_name
@@ -508,11 +513,11 @@ def test_full_pipeline_webcam():
                 if enrollment_frames_captured >= 5:
                     success = object_memory.finish_enrollment()
                     if success:
-                        print(f"\u2713 Enrolled '{enrollment_target_obj['custom_name']}'")
+                        print(f"[OK] Enrolled '{enrollment_target_obj['custom_name']}'")
                         if audio_enabled:
                             audio.speak_social(f"Remembered your {enrollment_target_obj['custom_name']}")
                     else:
-                        print(f"\u2717 Enrollment failed - try again")
+                        print(f"[FAIL] Enrollment failed - try again")
                     enrollment_mode = False
                     enrollment_target_obj = None
                     enrollment_frames_captured = 0
@@ -607,12 +612,12 @@ def test_full_pipeline_webcam():
                             if gps_nav_step + 1 < len(osm_nav.current_route['steps']):
                                 gps_nav_step += 1
                                 last_gps_announcement = None
-                                print(f"✓ Advanced to step {gps_nav_step + 1}")
+                                print(f"[OK] Advanced to step {gps_nav_step + 1}")
                             else:
                                 # Arrived!
                                 if audio_enabled:
                                     audio.speak_social("You have arrived at your destination")
-                                print("\n✓ GPS Navigation: ARRIVED!")
+                                print("\n[OK] GPS Navigation: ARRIVED!")
                                 gps_navigation_active = False
                     
                     # Enhanced obstacle detection during GPS navigation
@@ -701,7 +706,7 @@ def test_full_pipeline_webcam():
             if name:
                 success = face_recognizer.enroll_face(frame, name)
                 if success:
-                    print(f"✓ Enrolled {name}")
+                    print(f"[OK] Enrolled {name}")
                     if audio_enabled:
                         audio.speak_social(f"Enrolled {name}")
         elif key == ord('r'):
@@ -728,14 +733,14 @@ def test_full_pipeline_webcam():
                                         'custom_name': custom_name,
                                         'yolo_class': obj['class_name']
                                     }
-                                    print(f"\u2713 Starting enrollment for '{custom_name}'...")
+                                    print(f"[OK] Starting enrollment for '{custom_name}'...")
                                     print("  Keep object in view, capturing 5 frames...")
                                 except ValueError as e:
-                                    print(f"\u2717 {e}")
+                                    print(f"[FAIL] {e}")
                     except (ValueError, IndexError):
-                        print("\u2717 Invalid selection")
+                        print("[FAIL] Invalid selection")
                 else:
-                    print("\u2717 No objects detected")
+                    print("[FAIL] No objects detected")
         elif key == ord('l'):
             # List remembered objects
             remembered_list = object_memory.list_remembered_objects()
@@ -755,8 +760,17 @@ def test_full_pipeline_webcam():
                     nearby = location['context'].get('nearby_objects', []) if location['context'] else []
                     nearby_str = f" near {', '.join(nearby)}" if nearby else ""
                     msg = f"Your {item} last seen{nearby_str}"
-                    print(f"✓ {msg}")
+                    print(f"[OK] {msg}")
                     print(f"  Time: {location['timestamp']}")
+                    
+                    gps_lat = location.get('gps_lat')
+                    gps_lon = location.get('gps_lon')
+                    if gps_lat is not None and gps_lon is not None:
+                        gps_msg = f"Your {item} is at approximately {gps_lat:.6f} latitude, {gps_lon:.6f} longitude"
+                        print(f"  {gps_msg}")
+                        if audio_enabled:
+                            audio.speak_navigational(gps_msg)
+                    
                     if audio_enabled:
                         audio.speak_navigational(msg)
                 else:
@@ -764,11 +778,11 @@ def test_full_pipeline_webcam():
                     loc = item_tracker.query_item_location(item)
                     if loc:
                         msg = f"Your {item} are on the {loc}"
-                        print(f"✓ {msg}")
+                        print(f"[OK] {msg}")
                         if audio_enabled:
                             audio.speak_navigational(msg)
                     else:
-                        print(f"✗ Haven't seen {item}")
+                        print(f"[FAIL] Haven't seen {item}")
         elif key == ord('a'):
             audio_enabled = not audio_enabled
             print(f"\n🔊 Audio feedback: {'ON' if audio_enabled else 'OFF'}")
@@ -787,14 +801,14 @@ def test_full_pipeline_webcam():
                     # Geocode destination
                     dest_coords = osm_nav.geocode_address(destination + ", Bangalore, India")
                     if not dest_coords:
-                        print("✗ Could not find destination")
+                        print("[FAIL] Could not find destination")
                         if audio_enabled:
                             audio.speak_status("Could not find destination")
                     else:
                         # Get current position
                         current_pos = gps_tracker.get_position()
                         if not current_pos:
-                            print("✗ Waiting for GPS signal")
+                            print("[FAIL] Waiting for GPS signal")
                             if audio_enabled:
                                 audio.speak_status("Waiting for GPS signal")
                         else:
@@ -805,12 +819,12 @@ def test_full_pipeline_webcam():
                                 gps_navigation_active = True
                                 gps_nav_step = 0
                                 last_gps_announcement = None
-                                print(f"✓ Route found: {route['total_distance']}, {route['total_duration']}")
+                                print(f"[OK] Route found: {route['total_distance']}, {route['total_duration']}")
                                 print(f"  Steps: {len(route['steps'])}")
                                 if audio_enabled:
                                     audio.speak_social(f"Route found. {route['total_distance']}. {route['total_duration']}.")
                             else:
-                                print("✗ Could not find route")
+                                print("[FAIL] Could not find route")
                                 if audio_enabled:
                                     audio.speak_status("Could not find route")
             else:
@@ -826,7 +840,7 @@ def test_full_pipeline_webcam():
                 new_pos = gps_tracker.get_position()
                 print(f"\n📍 Mock GPS advanced to: {new_pos[0]:.6f}, {new_pos[1]:.6f}")
             else:
-                print("\n⚠ GPS is in REAL mode, not mock mode")
+                print("\n[WARN] GPS is in REAL mode, not mock mode")
         elif key == ord('v'):
             # Toggle voice mode
             if voice_system:
@@ -836,7 +850,7 @@ def test_full_pipeline_webcam():
                 if audio_enabled:
                     audio.speak_status(f"Voice mode {status}")
             else:
-                print("\n⚠ Voice system not available")
+                print("\n[WARN] Voice system not available")
         elif key == 32:  # SPACEBAR
             # Trigger voice input (button simulation)
             if voice_system and voice_mode_enabled:
@@ -846,9 +860,9 @@ def test_full_pipeline_webcam():
                 voice_system.trigger_voice_input()
             else:
                 if not voice_system:
-                    print("\n⚠ Voice system not available")
+                    print("\n[WARN] Voice system not available")
                 else:
-                    print("\n⚠ Voice mode is OFF - press V to enable")
+                    print("\n[WARN] Voice mode is OFF - press V to enable")
     
     # Fix 1: stop the background reader thread and release the webcam handle.
     cam.stop()
@@ -894,7 +908,7 @@ def test_priority_system():
     audio.speak_emergency("STOP - Red Light")  # Should interrupt
     
     print("\nEmergency message should play immediately and interrupt others")
-    print("✓ Priority test queued!")
+    print("[OK] Priority test queued!")
     
     # Wait for audio to finish
     time.sleep(10)
@@ -910,24 +924,24 @@ def test_database_integration():
     
     # Check faces
     faces = db.get_all_faces()
-    print(f"\n✓ Faces in database: {len(faces)}")
+    print(f"\n[OK] Faces in database: {len(faces)}")
     for face_id, name, _ in faces:
         print(f"  - {name} (ID: {face_id})")
     
     # Check item locations
     items = db.get_all_item_locations()
-    print(f"\n✓ Item locations in database: {len(items)}")
+    print(f"\n[OK] Item locations in database: {len(items)}")
     for item, location, timestamp in items:
         print(f"  - {item} on {location} (at {timestamp})")
     
     # Check remembered objects
     remembered = db.get_all_remembered_objects()
-    print(f"\n✓ Remembered objects in database: {len(remembered)}")
+    print(f"\n[OK] Remembered objects in database: {len(remembered)}")
     for obj_id, name, yolo_class in remembered:
         print(f"  - {name} ({yolo_class}) [ID: {obj_id}]")
     
     db.close()
-    print("\n✓ Database integration test complete!")
+    print("\n[OK] Database integration test complete!")
 
 
 if __name__ == "__main__":

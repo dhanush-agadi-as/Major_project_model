@@ -37,7 +37,7 @@ db = VisionMateDB()
 object_detector = ObjectDetector()
 face_recognizer = FaceRecognizer(db)
 object_memory   = ObjectMemory(db)
-print("✓ Modules ready\n")
+print("[OK] Modules ready\n")
 
 print("Opening webcam (threaded, DirectShow)...")
 cam = CameraReader(cam_index=0, width=640, height=480, fps=30,
@@ -51,11 +51,11 @@ while True:
     if frame is not None:
         break
     if time.time() > deadline:
-        print("✗ No frame from webcam within 3 s — aborting")
+        print("[FAIL] No frame from webcam within 3 s — aborting")
         cam.stop()
         sys.exit(1)
     time.sleep(0.01)
-print("✓ Webcam opened (first frame received)\n")
+print("[OK] Webcam opened (first frame received)\n")
 
 # ── timing state ───────────────────────────────────────────────
 timing_stats   = dict(new_frame_wait=0.0, yolo=0.0, obj_memory=0.0, face=0.0)
@@ -106,10 +106,14 @@ while frame_count < BENCH_FRAMES:
             bbox = tuple(obj['bbox'])
             match = object_memory.recognize_object(frame, bbox, obj['class_name'])
             if match:
-                custom_name, confidence = match
-                remembered_objects.append({'custom_name': custom_name,
-                                            'confidence': confidence,
-                                            'bbox': obj['bbox']})
+                custom_name, confidence, match_tier = match
+                remembered_objects.append({
+                    'custom_name': custom_name,
+                    'yolo_class': obj['class_name'],
+                    'confidence': confidence,
+                    'tier': match_tier,
+                    'bbox': obj['bbox']
+                })
                 object_to_custom_name[id(obj)] = custom_name
         last_remembered_objects    = remembered_objects
         last_object_to_custom_name = object_to_custom_name

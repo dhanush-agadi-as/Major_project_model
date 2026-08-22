@@ -55,10 +55,10 @@ def test_iou_calculation():
     print("\nRunning IoU tests...")
     for test in test_cases:
         iou = tracker.calculate_iou(test['box1'], test['box2'])
-        status = '✓' if abs(iou - test['expected']) < 0.1 else '✗'
+        status = '[OK]' if abs(iou - test['expected']) < 0.1 else '[FAIL]'
         print(f"  {status} {test['name']}: IoU = {iou:.3f} (expected ~{test['expected']:.2f})")
     
-    print("\n✓ IoU calculation test complete!")
+    print("\n[OK] IoU calculation test complete!")
 
 
 def test_item_tracking_simulation():
@@ -95,7 +95,7 @@ def test_item_tracking_simulation():
         confirmed = tracker.update_tracking(detections)
         
         if confirmed:
-            print(f"  ✓ Confirmed location: {confirmed}")
+            print(f"  [OK] Confirmed location: {confirmed}")
         else:
             print(f"  ⊙ Still tracking...")
         
@@ -103,11 +103,11 @@ def test_item_tracking_simulation():
     
     # Query location
     location = tracker.query_item_location('keys')
-    print(f"\n✓ Final query result: keys are on {location}")
+    print(f"\n[OK] Final query result: keys are on {location}")
     
     # Show all tracked items
     all_items = tracker.get_all_tracked_items()
-    print(f"\n✓ All tracked items: {all_items}")
+    print(f"\n[OK] All tracked items: {all_items}")
     
     db.close()
 
@@ -128,7 +128,7 @@ def test_item_tracking_live():
     
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("✗ Could not open webcam")
+        print("[FAIL] Could not open webcam")
         db.close()
         return
     
@@ -193,14 +193,14 @@ def test_item_tracking_live():
             item = input("\nEnter item to query (e.g., 'keys'): ").strip()
             location = tracker.query_item_location(item)
             if location:
-                print(f"✓ {item} are on {location}")
+                print(f"[OK] {item} are on {location}")
             else:
-                print(f"✗ Haven't seen {item}")
+                print(f"[FAIL] Haven't seen {item}")
     
     cap.release()
     cv2.destroyAllWindows()
     
-    print("\n✓ Live tracking test complete!")
+    print("\n[OK] Live tracking test complete!")
     db.close()
 
 
@@ -216,8 +216,8 @@ def test_database_item_storage():
     print("\nAdding test items...")
     db.update_item_location('keys', 'chair')
     db.update_item_location('bottle', 'sofa')
-    print("  ✓ Added 'keys' on 'chair'")
-    print("  ✓ Added 'bottle' on 'sofa'")
+    print("  [OK] Added 'keys' on 'chair'")
+    print("  [OK] Added 'bottle' on 'sofa'")
     
     # Query items
     print("\nQuerying items...")
@@ -232,7 +232,7 @@ def test_database_item_storage():
     for item, loc, timestamp in all_items:
         print(f"  - {item} on {loc} (at {timestamp})")
     
-    print("\n✓ Database test complete!")
+    print("\n[OK] Database test complete!")
     db.close()
 
 

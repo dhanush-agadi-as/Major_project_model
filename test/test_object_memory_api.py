@@ -42,7 +42,7 @@ def test_object_memory_api():
     print("=" * 60)
     
     memory = ObjectMemory()
-    print("✓ Initialized\n")    
+    print("[OK] Initialized\n")    
     # Test enrollment workflow
     print("Test 1: Enrollment workflow")
     memory.start_enrollment("test item", "bottle")
@@ -53,7 +53,7 @@ def test_object_memory_api():
         print(f"  Frame {i+1} added")
     
     success = memory.finish_enrollment()
-    print(f"  Enrollment: {'✓ Success' if success else '✗ Failed'}\n")
+    print(f"  Enrollment: {'[OK] Success' if success else '[FAIL] Failed'}\n")
     
     if not success:
         print("Note: ORB feature extraction may need real images with more texture")
@@ -78,7 +78,7 @@ def test_object_memory_api():
         nearby_objects=["laptop", "mouse"],
         confidence=0.85
     )
-    print("  ✓ Sighting recorded\n")
+    print("  [OK] Sighting recorded\n")
     
     # Test query
     print("Test 4: Query location")
@@ -96,7 +96,7 @@ def test_object_memory_api():
     print(f"  Remaining objects: {len(objects)}\n")
     
     print("=" * 60)
-    print("API tests passed! ✓")
+    print("API tests passed! [OK]")
     print("=" * 60)
     print("\nNote: For full feature matching tests, use real webcam images")
     print("      Run the integration test with 'R' key to enroll real objects")
@@ -108,7 +108,7 @@ if __name__ == "__main__":
         success = test_object_memory_api()
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"\n✗ Test failed: {e}")
+        print(f"\n[FAIL] Test failed: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

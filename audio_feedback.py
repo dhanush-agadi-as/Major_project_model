@@ -44,7 +44,7 @@ class AudioFeedback:
         self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
         self.playback_thread.start()
         
-        print(f"✓ Audio Feedback initialized")
+        print(f"[OK] Audio Feedback initialized")
         print(f"  Engine: {'gTTS' if use_gtts else 'pyttsx3'}")
         print(f"  Priority levels: EMERGENCY(1) > SOCIAL(2) > NAVIGATIONAL(3) > STATUS(4)")
     
@@ -102,7 +102,7 @@ class AudioFeedback:
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"✗ Audio playback error: {e}")
+                print(f"[FAIL] Audio playback error: {e}")
                 self.is_playing = False
     
     def _play_text(self, text: str):
@@ -136,7 +136,7 @@ class AudioFeedback:
             os.remove(temp_file)
             
         except Exception as e:
-            print(f"✗ gTTS error: {e}")
+            print(f"[FAIL] gTTS error: {e}")
             print(f"[AUDIO]: {text}")
     
     def _play_pyttsx3(self, text: str):
@@ -145,7 +145,7 @@ class AudioFeedback:
             self.engine.say(text)
             self.engine.runAndWait()
         except Exception as e:
-            print(f"✗ pyttsx3 error: {e}")
+            print(f"[FAIL] pyttsx3 error: {e}")
             print(f"[AUDIO]: {text}")
     
     def _clear_queue(self):
@@ -196,4 +196,4 @@ if __name__ == "__main__":
     import time
     time.sleep(5)
     
-    print("\n✓ Audio Feedback test complete")
+    print("\n[OK] Audio Feedback test complete")

@@ -33,7 +33,7 @@ def test_zone_detection():
     passed = 0
     for bbox, expected_zone in test_cases:
         actual_zone = nav.get_object_zone(bbox)
-        status = "✓" if actual_zone == expected_zone else "✗"
+        status = "[OK]" if actual_zone == expected_zone else "[FAIL]"
         print(f"  {status} Bbox {bbox[:2]} -> {actual_zone} (expected: {expected_zone})")
         if actual_zone == expected_zone:
             passed += 1
@@ -65,7 +65,7 @@ def test_distance_estimation():
         actual_dist = nav.estimate_distance(bbox)
         x1, y1, x2, y2 = bbox
         area_pct = ((x2-x1) * (y2-y1)) / frame_area * 100
-        status = "✓" if actual_dist == expected_dist else "✗"
+        status = "[OK]" if actual_dist == expected_dist else "[FAIL]"
         print(f"  {status} {area_pct:.1f}% of frame -> {actual_dist} (expected: {expected_dist})")
         if actual_dist == expected_dist:
             passed += 1
@@ -90,7 +90,7 @@ def test_obstacle_classification():
     total = 0
     for obj in obstacles:
         is_obstacle = nav.is_obstacle(obj)
-        status = "✓" if is_obstacle else "✗"
+        status = "[OK]" if is_obstacle else "[FAIL]"
         print(f"    {status} {obj}: {is_obstacle}")
         if is_obstacle:
             passed += 1
@@ -99,7 +99,7 @@ def test_obstacle_classification():
     print("\n  Non-obstacles (should be False):")
     for obj in non_obstacles:
         is_obstacle = nav.is_obstacle(obj)
-        status = "✓" if not is_obstacle else "✗"
+        status = "[OK]" if not is_obstacle else "[FAIL]"
         print(f"    {status} {obj}: {is_obstacle}")
         if not is_obstacle:
             passed += 1
@@ -131,7 +131,7 @@ def test_clear_direction():
     passed = 0
     for occupied, expected_dir in test_cases:
         actual_dir = nav.get_clear_direction(occupied)
-        status = "✓" if actual_dir == expected_dir else "✗"
+        status = "[OK]" if actual_dir == expected_dir else "[FAIL]"
         print(f"  {status} Occupied: {occupied or 'none'}")
         print(f"      -> Direction: {actual_dir or 'STOP'} (expected: {expected_dir or 'STOP'})")
         if actual_dir == expected_dir:
@@ -170,10 +170,10 @@ def test_guidance_generation():
     no_bottle = not any('bottle' in g['message'].lower() for g in guidance)
     
     print("\n  Validation:")
-    print(f"    {'✓' if has_chair_guidance else '✗'} Chair mentioned")
-    print(f"    {'✓' if has_person_guidance else '✗'} Person mentioned")
-    print(f"    {'✓' if has_direction else '✗'} Direction provided")
-    print(f"    {'✓' if no_bottle else '✗'} Non-obstacle (bottle) ignored")
+    print(f"    {'[OK]' if has_chair_guidance else '[FAIL]'} Chair mentioned")
+    print(f"    {'[OK]' if has_person_guidance else '[FAIL]'} Person mentioned")
+    print(f"    {'[OK]' if has_direction else '[FAIL]'} Direction provided")
+    print(f"    {'[OK]' if no_bottle else '[FAIL]'} Non-obstacle (bottle) ignored")
     
     passed = has_chair_guidance and has_person_guidance and has_direction and no_bottle
     print(f"\n  Result: {'PASS' if passed else 'FAIL'}")
@@ -214,11 +214,11 @@ def test_realistic_scenario():
         print(f"\n  Recommended action: {direction}")
         # With obstacles in both bottom corners, should stop
         success = 'stop' in direction.lower() or 'blocked' in direction.lower()
-        print(f"  Explanation: Bottom-left (chair) + Bottom-right (person) = path blocked ✓")
+        print(f"  Explanation: Bottom-left (chair) + Bottom-right (person) = path blocked [OK]")
     else:
         success = False
     
-    print(f"\n  Result: {'✓ PASS' if success else '✗ FAIL'}")
+    print(f"\n  Result: {'[OK] PASS' if success else '[FAIL] FAIL'}")
     return success
 
 
@@ -243,7 +243,7 @@ def run_all_tests():
             passed = test_func()
             results.append((name, passed))
         except Exception as e:
-            print(f"\n✗ Test '{name}' crashed: {e}")
+            print(f"\n[FAIL] Test '{name}' crashed: {e}")
             results.append((name, False))
     
     # Summary
@@ -252,7 +252,7 @@ def run_all_tests():
     print("=" * 60)
     passed_count = sum(1 for _, p in results if p)
     for name, passed in results:
-        status = "✓ PASS" if passed else "✗ FAIL"
+        status = "[OK] PASS" if passed else "[FAIL] FAIL"
         print(f"  {status}: {name}")
     
     print("\n" + "=" * 60)

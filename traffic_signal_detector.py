@@ -21,7 +21,7 @@ class TrafficSignalDetector:
         self.green_upper = np.array(TRAFFIC_HSV_GREEN_UPPER)
         self.min_area = TRAFFIC_MIN_AREA
         
-        print(f"✓ Traffic Signal Detector initialized")
+        print(f"[OK] Traffic Signal Detector initialized")
         print(f"  Minimum detection area: {self.min_area} pixels")
     
     def detect_signal(self, frame: np.ndarray) -> Optional[Dict]:
@@ -184,4 +184,4 @@ class TrafficSignalDetector:
 if __name__ == "__main__":
     # Quick test
     detector = TrafficSignalDetector()
-    print("\n✓ Traffic Signal Detector ready")
+    print("\n[OK] Traffic Signal Detector ready")

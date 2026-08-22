@@ -324,13 +324,13 @@ if __name__ == "__main__":
     
     # Register test handlers
     def handle_remember(params):
-        print(f"✓ REMEMBER command: {params}")
+        print(f"[OK] REMEMBER command: {params}")
         
     def handle_find(params):
-        print(f"✓ FIND command: {params}")
+        print(f"[OK] FIND command: {params}")
         
     def handle_navigate(params):
-        print(f"✓ NAVIGATE command activated")
+        print(f"[OK] NAVIGATE command activated")
         
     vcs.register_command_handler('remember', handle_remember)
     vcs.register_command_handler('find', handle_find)

@@ -68,10 +68,11 @@ class ObjectDetector:
         
         # COCO class name mapping
         self.coco_mapping = {
-            'couch': 'sofa',  # Map COCO 'couch' to our 'sofa'
+            'sofa': 'couch',  # Map COCO 'sofa' to our 'couch' (if returned by some models)
+            'couch': 'couch', # Ensure it remains couch
         }
         
-        print(f"✓ Object Detector initialized")
+        print(f"[OK] Object Detector initialized")
         print(f"  Target classes: {self.target_classes}")
     
     def detect(self, frame: np.ndarray) -> List[Dict]:
@@ -192,4 +193,4 @@ class ObjectDetector:
 if __name__ == "__main__":
     # Quick test
     detector = ObjectDetector()
-    print("\n✓ Object Detector ready for inference")
+    print("\n[OK] Object Detector ready for inference")

@@ -1,13 +1,35 @@
 """
 GPS Position Tracking
-Supports both real GPS modules and mock GPS for testing
+Supports both real GPS modules and mock GPS for testing.
+
+Position-source priority order (highest to lowest):
+  1. Manual override  -- fixed lat/lon from config; instant, no network.
+                         Use for indoor/bench testing at a known location.
+  2. Wi-Fi geolocation -- Mozilla Location Service via AP scan (nmcli/iwlist).
+                         Accuracy ~10-300 m. Linux/Raspberry Pi only.
+                         Falls through to IP if no APs found or MLS fails.
+  3. IP geolocation   -- ip-api.com city-level lookup. Accuracy ~1-10 km.
+                         No hardware required; works anywhere with internet.
+  4. Mock mode        -- simulated path in RR Nagar, Bangalore. Keyboard-
+                         driven (M key). Zero dependencies. Safe fallback.
+  5. Real serial GPS  -- NMEA data from a physical GPS module on GPS_PORT.
+                         Falls back to mock if the serial port won't open.
+
+Each layer is independently enable/disable via config.py flags.
+Setting GPS_USE_WIFI_GEOLOCATION=False and GPS_USE_IP_GEOLOCATION=False
+restores byte-identical behaviour to the original mock/serial-only code.
 """
 
 import logging
 import time
 import threading
 from typing import Optional, Tuple
-from config import GPS_MOCK_MODE, GPS_PORT, GPS_BAUDRATE
+from config import (
+    GPS_MOCK_MODE, GPS_PORT, GPS_BAUDRATE,
+    GPS_USE_IP_GEOLOCATION, IP_GEOLOCATION_CACHE_SECONDS,
+    GPS_USE_WIFI_GEOLOCATION,
+    GPS_MANUAL_OVERRIDE_ENABLED, GPS_MANUAL_OVERRIDE_LAT, GPS_MANUAL_OVERRIDE_LON,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,29 +39,65 @@ class GPSTracker:
     GPS position tracker with mock mode for testing
     """
     
-    def __init__(self, mock_mode: bool = GPS_MOCK_MODE):
+    def __init__(
+        self,
+        mock_mode: bool = GPS_MOCK_MODE,
+        use_ip_geolocation: bool = GPS_USE_IP_GEOLOCATION,
+        manual_override: bool = GPS_MANUAL_OVERRIDE_ENABLED,
+    ):
         self.mock_mode = mock_mode
+        self.use_ip_geolocation = use_ip_geolocation
+        self.manual_override = manual_override
+        self.ip_tracker = None
         self.current_position = None
         self.last_update = None
         self.speed = 0.0  # m/s
         self.heading = 0.0  # degrees
         self.is_running = False
-        
-        if mock_mode:
-            logger.info("GPS Tracker initialized in MOCK mode")
+        # True only when a real serial GPS port was successfully opened.
+        # Kept separate from mock_mode so that Wi-Fi/IP layers enabling
+        # mock_mode=False never accidentally triggers the serial read thread.
+        self.use_serial = False
+
+        # Layer 1: manual override -- no network, instant
+        if manual_override:
+            logger.info(
+                f"GPS Tracker: manual override ACTIVE "
+                f"({GPS_MANUAL_OVERRIDE_LAT}, {GPS_MANUAL_OVERRIDE_LON}). "
+                "All network/serial/mock sources bypassed."
+            )
+
+        # Layer 3: IP geolocation (ip-api.com)
+        if self.ip_tracker is not None:
+            pos = self.ip_tracker.get_position()
+            if pos is not None:
+                self.current_position = pos
+                self.last_update = time.time()
+                return pos
+
+        # Layers 4 & 5: mock path or real serial GPS (existing logic, unchanged)
+        if not use_ip_geolocation and not manual_override:
+            if mock_mode:
+                logger.info("GPS Tracker initialized in MOCK mode")
+                self.mock_path_index = 0
+                self.mock_path = self._generate_mock_path()
+            else:
+                logger.info(f"GPS Tracker initialized on {GPS_PORT}")
+                try:
+                    import serial
+                    self.serial_port = serial.Serial(GPS_PORT, GPS_BAUDRATE, timeout=1)
+                    self.use_serial = True   # only set here — serial port is actually open
+                    logger.info("GPS serial connection established")
+                except Exception as e:
+                    logger.error(f"Failed to open GPS serial port: {e}")
+                    logger.warning("Falling back to MOCK mode")
+                    self.mock_mode = True
+                    self.mock_path = self._generate_mock_path()
+        elif mock_mode and not manual_override:
+            # At least one network layer is active, but keep mock data ready
+            # so that advance_mock_position() still works during testing
             self.mock_path_index = 0
             self.mock_path = self._generate_mock_path()
-        else:
-            logger.info(f"GPS Tracker initialized on {GPS_PORT}")
-            try:
-                import serial
-                self.serial_port = serial.Serial(GPS_PORT, GPS_BAUDRATE, timeout=1)
-                logger.info("GPS serial connection established")
-            except Exception as e:
-                logger.error(f"Failed to open GPS serial port: {e}")
-                logger.warning("Falling back to MOCK mode")
-                self.mock_mode = True
-                self.mock_path = self._generate_mock_path()
     
     def _generate_mock_path(self) -> list:
         """Generate a mock GPS path for testing (RR Nagar, Bangalore)"""
@@ -59,25 +117,44 @@ class GPSTracker:
     def start(self):
         """Start GPS tracking"""
         self.is_running = True
-        if not self.mock_mode:
+        if self.use_serial:
             self.tracking_thread = threading.Thread(target=self._read_gps_loop, daemon=True)
             self.tracking_thread.start()
         logger.info("GPS tracking started")
-    
+
     def stop(self):
         """Stop GPS tracking"""
         self.is_running = False
-        if not self.mock_mode and hasattr(self, 'serial_port'):
+        if self.use_serial and hasattr(self, 'serial_port'):
             self.serial_port.close()
         logger.info("GPS tracking stopped")
     
     def get_position(self) -> Optional[Tuple[float, float]]:
         """
-        Get current GPS position
-        
-        Returns:
-            Tuple of (latitude, longitude) or None if unavailable
+        Get current GPS position using the highest-priority available source.
+
+        Priority: manual override > Wi-Fi > IP geolocation > mock > serial GPS.
+        Returns (latitude, longitude) or None if unavailable.
+
+        NOTE: The resolved position is always stored in self.current_position so
+        callers that read the attribute directly (e.g. server.py) see a real value
+        rather than None when only network-based layers are active.
         """
+        # Layer 1: manual override -- instant, no network
+        if self.manual_override:
+            pos = (GPS_MANUAL_OVERRIDE_LAT, GPS_MANUAL_OVERRIDE_LON)
+            self.current_position = pos
+            return pos
+
+        # Layer 3: IP geolocation (ip-api.com)
+        if self.ip_tracker is not None:
+            pos = self.ip_tracker.get_position()
+            if pos is not None:
+                self.current_position = pos
+                self.last_update = time.time()
+                return pos
+
+        # Layers 4 & 5: mock path or real serial GPS (original logic, unchanged)
         if self.mock_mode:
             return self._get_mock_position()
         else:
@@ -92,6 +169,15 @@ class GPSTracker:
         self.current_position = position
         self.last_update = time.time()
         return position
+    
+    def get_city(self) -> Optional[str]:
+        """
+        Get current city string if available from IP geolocation.
+        Otherwise returns None.
+        """
+        if self.ip_tracker is not None:
+            return self.ip_tracker.get_city()
+        return None
     
     def advance_mock_position(self):
         """Move to next position in mock path (for testing)"""
@@ -203,7 +289,11 @@ class GPSTracker:
         return decimal_degrees
     
     def is_available(self) -> bool:
-        """Check if GPS is available and working"""
+        """Check if GPS is available and working (mirrors get_position() priority order)"""
+        if self.manual_override:
+            return GPS_MANUAL_OVERRIDE_LAT is not None and GPS_MANUAL_OVERRIDE_LON is not None
+        if self.ip_tracker is not None:
+            return self.ip_tracker.get_position() is not None
         if self.mock_mode:
             return True
         return self.current_position is not None
@@ -236,4 +326,4 @@ if __name__ == "__main__":
             print(f"  Position {i+1}: GPS not available")
     
     gps.stop()
-    print("\n✓ GPS Tracker test complete!")
+    print("\n[OK] GPS Tracker test complete!")
