@@ -1,31 +1,20 @@
 """
 Threaded camera reader for VisionMate.
 
-Runs cv2.VideoCapture.read() in a background thread so the AI
-inference pipeline never blocks waiting for the next webcam frame.
-Frames are always the *latest* captured one — stale frames are
-discarded, not queued.
+Cross-platform webcam reader that works on:
+- Windows (CAP_DSHOW)
+- Linux / Docker / Raspberry Pi (CAP_V4L2)
+- macOS (CAP_ANY fallback)
 
-Usage
------
-    from camera_reader import CameraReader
-
-    cam = CameraReader(cam_index=0)
-    cam.start()
-
-    while True:
-        frame = cam.read()
-        if frame is None:
-            continue            # first frame not yet available
-        # … run inference on frame …
-
-    cam.stop()
+Runs cv2.VideoCapture.read() in a background thread so AI inference
+never blocks waiting for webcam frames.
 """
 
 import cv2
 import threading
 import time
 import logging
+import platform
 
 logger = logging.getLogger(__name__)
 
@@ -34,23 +23,8 @@ class CameraReader:
     """
     Background-threaded VideoCapture wrapper.
 
-    The reader thread continuously grabs frames from the webcam.
-    The inference thread calls :meth:`read` to get the most-recent
-    frame without blocking on I/O.
-
-    Parameters
-    ----------
-    cam_index : int
-        OpenCV camera index (0 = default webcam).
-    width, height : int
-        Requested capture resolution (may be ignored by the driver).
-    fps : int
-        Requested frame-rate hint sent to the driver.
-    backend : int
-        OpenCV backend flag (e.g. ``cv2.CAP_DSHOW`` on Windows).
-    warmup_frames : int
-        Number of frames to read silently after open before making
-        them available to callers (discards first-few dark frames).
+    Continuously captures frames in a daemon thread.
+    Always returns the latest frame (no queue, no stale frames).
     """
 
     def __init__(
@@ -59,104 +33,155 @@ class CameraReader:
         width: int = 640,
         height: int = 480,
         fps: int = 30,
-        backend: int = cv2.CAP_DSHOW,
+        backend: int | None = None,
         warmup_frames: int = 3,
     ):
         self._cam_index = cam_index
         self._width = width
         self._height = height
         self._fps = fps
-        self._backend = backend
         self._warmup_frames = warmup_frames
 
-        self._cap: cv2.VideoCapture | None = None
-        self._frame = None          # latest captured frame (BGR ndarray)
-        self._frame_id = 0          # increments each new frame
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread: threading.Thread | None = None
+        # -------------------------------
+        # Select backend automatically
+        # -------------------------------
+        if backend is None:
+            system = platform.system()
 
-        # Timing stats (updated by reader thread)
-        self._last_read_ms: float = 0.0
-        self._frames_captured: int = 0
+            if system == "Windows":
+                self._backend = cv2.CAP_DSHOW
+            elif system == "Linux":
+                self._backend = cv2.CAP_V4L2
+            else:
+                self._backend = cv2.CAP_ANY
+        else:
+            self._backend = backend
+
+        self._cap = None
+        self._frame = None
+        self._frame_id = 0
+        self._lock = threading.Lock()
+
+        self._running = False
+        self._thread = None
+
+        # Statistics
+        self._last_read_ms = 0.0
+        self._frames_captured = 0
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def start(self) -> "CameraReader":
-        """Open the webcam and start the reader thread."""
-        self._cap = cv2.VideoCapture(self._cam_index, self._backend)
-        if not self._cap.isOpened():
-            raise RuntimeError(
-                f"CameraReader: cannot open camera index {self._cam_index}"
-            )
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-        self._cap.set(cv2.CAP_PROP_FPS,          self._fps)
-
-        # Warm up: discard a few frames that may be over-exposed / dark
-        for _ in range(self._warmup_frames):
-            self._cap.read()
-
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._reader_loop, name="CameraReaderThread", daemon=True
-        )
-        self._thread.start()
-        logger.info("CameraReader started (index=%d, %dx%d @ %dfps)",
-                    self._cam_index, self._width, self._height, self._fps)
-        return self
-
-    def stop(self):
-        """Stop the reader thread and release the webcam."""
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-        if self._cap is not None:
-            self._cap.release()
-        logger.info("CameraReader stopped. %d frames captured.", self._frames_captured)
-
-    def read(self):
+    def start(self):
         """
-        Return the most-recent frame, or ``None`` if none yet.
-
-        This call **never blocks** — it returns whatever was last grabbed
-        by the background thread.
+        Open webcam using backend fallback.
 
         Returns
         -------
-        frame : np.ndarray | None
-            BGR image array, or ``None`` before the first frame arrives.
-        frame_id : int
-            Monotonically increasing counter; compare with previous
-            call to detect whether a new frame is available.
+        CameraReader
         """
+
+        # Try preferred backend first, then fallback.
+        backends_to_try = [self._backend, cv2.CAP_ANY]
+
+        for backend in backends_to_try:
+            logger.info(f"Trying camera backend: {backend}")
+
+            self._cap = cv2.VideoCapture(self._cam_index, backend)
+
+            if self._cap.isOpened():
+                logger.info(f"Camera opened successfully using backend {backend}")
+                break
+
+            self._cap.release()
+            self._cap = None
+
+        if self._cap is None or not self._cap.isOpened():
+            raise RuntimeError(
+                f"CameraReader: cannot open camera index {self._cam_index}"
+            )
+
+        # Camera properties
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        self._cap.set(cv2.CAP_PROP_FPS, self._fps)
+
+        # Warmup frames
+        for _ in range(self._warmup_frames):
+            self._cap.read()
+
+        # Start reader thread
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._reader_loop,
+            name="CameraReaderThread",
+            daemon=True,
+        )
+        self._thread.start()
+
+        logger.info(
+            "CameraReader started (index=%d, %dx%d @ %dfps)",
+            self._cam_index,
+            self._width,
+            self._height,
+            self._fps,
+        )
+
+        return self
+
+    def stop(self):
+        """Stop reader thread and release webcam."""
+
+        self._running = False
+
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+        logger.info(
+            "CameraReader stopped. %d frames captured.",
+            self._frames_captured,
+        )
+
+    def read(self):
+        """
+        Return latest captured frame.
+
+        Returns
+        -------
+        frame, frame_id
+        """
+
         with self._lock:
             return self._frame, self._frame_id
 
     @property
-    def last_read_ms(self) -> float:
-        """Average ms the reader thread spent waiting in cap.read()."""
+    def last_read_ms(self):
         return self._last_read_ms
 
     @property
-    def frames_captured(self) -> int:
+    def frames_captured(self):
         return self._frames_captured
 
-    def is_opened(self) -> bool:
+    def is_opened(self):
         return self._cap is not None and self._cap.isOpened()
 
     # ------------------------------------------------------------------
-    # Internal reader loop
+    # Internal reader thread
     # ------------------------------------------------------------------
 
     def _reader_loop(self):
-        """Background thread: continuously grab frames and store latest."""
+        """Continuously read frames."""
+
         while self._running:
+
             t0 = time.perf_counter()
             ret, frame = self._cap.read()
-            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            elapsed_ms = (time.perf_counter() - t0) * 1000
 
             if not ret:
                 logger.warning("CameraReader: cap.read() returned False")
@@ -170,11 +195,11 @@ class CameraReader:
                 self._last_read_ms = elapsed_ms
 
     # ------------------------------------------------------------------
-    # Context-manager support
+    # Context Manager Support
     # ------------------------------------------------------------------
 
     def __enter__(self):
         return self.start()
 
-    def __exit__(self, *_):
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
