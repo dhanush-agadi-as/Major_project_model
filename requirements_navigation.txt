@@ -1,0 +1,17 @@
+# VisionMate Navigation System Requirements
+
+# Core dependencies (required)
+requests>=2.31.0          # For Google Maps API calls
+numpy>=1.24.0             # For numerical operations
+opencv-python>=4.8.0      # For camera and image processing
+
+# Hardware communication (optional - only needed for real GPS and ultrasonic)
+pyserial>=3.5             # For GPS module and ESP32 communication
+# Install with: pip install pyserial
+
+# Google Maps API
+# Free tier: $200 credit/month = ~40,000 requests
+# Required APIs:
+#   - Directions API
+#   - Geocoding API
+#   - Places API (optional)

@@ -1,0 +1,48 @@
+# Project: VisionMate Assistive Smart Glasses
+# Role: Real-time AI Assistant for the Visually Impaired
+# Frameworks: Python 3.10+, OpenCV, Ultralytics (YOLOv8), InsightFace, SQLite, gTTS/pyttsx3
+
+## 1. System Architecture (Prototype Phase)
+- Client: Raspberry Pi 5 acting as a wireless sensor gateway.
+- Server: Laptop with RTX 3060 acting as the AI Inference Hub.
+- Connectivity: Pi streams CSI/OAK-D camera frames via Socket/Flask; Laptop sends back processed Audio Feedback.
+- Priority Logic: Laptop handles all AI processing to ensure 30+ FPS during demonstration.
+
+## 2. Machine Learning Pipeline
+- Object Detection: YOLOv8n (Nano) for detecting 'Person', 'Chair', 'Bottle', 'Sofa', 'TV', and a custom-trained 'Keys' class.
+- Face Recognition: InsightFace/FaceNet for extracting 128-d embeddings.
+- Signal Logic: HSV Color Masking and CNN-based classification for Red/Green traffic signals.
+- Audio Feedback: Priority-based Text-to-Speech (TTS) hierarchy.
+
+## 3. Core Feature Logic
+- Feature 1: "Remember" (Identity Enrollment)
+  - Trigger: Physical GPIO button press on the Wearable Unit.
+  - Action: Capture the current frame, extract the face embedding, and save to SQLite database (Name, Embedding, Timestamp).
+  - Identification: Continuous matching of live embeddings against the SQLite database using Euclidean distance (Threshold < 0.6).
+
+- Feature 2: "Passive Item Tracking" (Find My Keys)
+  - Logic: Use Bounding Box coordinates to calculate Intersection over Union (IoU).
+  - Condition: If 'Keys' box is consistently inside 'Table' box for >3 seconds, update database status: {item: 'keys', location: 'table'}.
+  - Query: On voice command "Where are my keys?", system reads the last known 'location' from the database.
+
+- Feature 3: "Safety Override" (Traffic Signals)
+  - Priority: If 'Traffic Light' is detected, immediately classify color.
+  - Response: If 'Red', interrupt all other audio output to play "STOP - Red Light".
+
+## 4. Audio Feedback Priority Hierarchy
+1. EMERGENCY: Collision warnings and Traffic Signals.
+2. SOCIAL: Recognized names from the "Remember" database.
+3. NAVIGATIONAL: Stationary obstacles (e.g., "Chair ahead").
+4. STATUS: Battery/Connectivity updates.
+
+## 5. Implementation Roadmap
+- Phase 1: Establish low-latency video streaming between Pi and Laptop.
+- Phase 2: Implement YOLOv8 inference loop with TTS feedback.
+- Phase 3: Build the "Remember" button-interrupt logic and SQLite integration.
+- Phase 4: Finalize the "Passive Tracking" logic using spatial overlap rules.
+- Phase 5: Optimize models for eventual standalone deployment (OpenVINO/TensorRT).
+
+## 6. Development Notes for Copilot
+- Focus on modular Python code.
+- Prioritize asynchronous processing for the camera feed and audio output to prevent frame lag.
+- Use 'insightface' for robust facial embeddings and 'ultralytics' for YOLOv8 management.

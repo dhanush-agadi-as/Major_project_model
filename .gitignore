@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+
+# Database
+*.db
+
+# Model weights (large binary files)
+yolov8n.pt
+yolov8n_openvino_model/
+
+# InsightFace cache
+.insightface/
+
+# OS artefacts
+.DS_Store
+Thumbs.db
