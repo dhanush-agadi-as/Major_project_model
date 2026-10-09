@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  visionmate:
+    build: .
+    container_name: visionmate-ai
+
+    ports:
+      - "8080:8080"
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./data:/app/data
+      - ./yolov8n.pt:/app/yolov8n.pt
+      - ./yolov8n_openvino_model:/app/yolov8n_openvino_model
+      - ./insightface_models:/root/.insightface
+      - ./torch_cache:/root/.cache/torch
+
+    restart: unless-stopped
