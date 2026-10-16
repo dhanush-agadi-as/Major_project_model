@@ -139,6 +139,7 @@ class RaspberryPiClient:
             try:
                 logger.info("Trying OpenCV DSHOW (Windows)...")
                 self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+                self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 self.camera.set(cv2.CAP_PROP_FPS, 30)
@@ -324,14 +325,14 @@ class RaspberryPiClient:
                 
                 # Wait for response from laptop
                 try:
-                    response = await asyncio.wait_for(websocket.recv(), timeout=0.5)
+                    response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
                     result = json.loads(response)
                     
                     # Process results
                     self.process_results(result)
                     
                 except asyncio.TimeoutError:
-                    logger.debug("No response from server (timeout)")
+                    logger.warning("No response from server within 5s")
                 
                 # Track FPS
                 self.frame_count += 1

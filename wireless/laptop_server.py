@@ -97,6 +97,7 @@ class LaptopMLServer:
         # Statistics
         self.frame_count = 0
         self.start_time = time.time()
+        self._stage_ms = {'detect': 0.0, 'memory': 0.0, 'face': 0.0, 'display': 0.0, 'total_ml': 0.0}
 
         # Feature toggles
         self.audio_enabled = True
@@ -111,6 +112,11 @@ class LaptopMLServer:
         # Remembered object announcement cooldown
         self.last_remembered_announce = {}   # {name: timestamp}
         self.remember_announce_cooldown = 3.0
+
+        # After C/X, mute the "Is this your X?" prompt for that object
+        self.ambiguous_mute_until = {}      # {name: timestamp}
+        self.CONFIRM_MUTE_SECONDS = 30.0
+        self.REJECT_MUTE_SECONDS = 60.0
 
         # Navigation announcement cooldown
         self.last_navigation_announce = 0
@@ -280,12 +286,14 @@ class LaptopMLServer:
                 if location:
                     # Build a human-friendly last-seen message
                     last_seen_msg = self.find_guide.describe_last_seen(location)
-                    # Incorporate Fix A's place-name enhancement
-                    if location.get('location'):
-                        msg = (f"Your {object_name} was last seen near "
-                               f"{location['location']}. {last_seen_msg}")
+                    place = (location.get('location') or '').strip()
+                    if place and not place.lower().startswith('near'):
+                        # Outdoor / place-name context: avoid repeating "last seen"
+                        tail = last_seen_msg[len('last seen '):] if last_seen_msg.startswith('last seen ') else last_seen_msg
+                        msg = f"Your {object_name} was last seen near {place}, {tail}"
                     else:
-                        msg = f"Your {object_name} {last_seen_msg}"
+                        # Indoor context ("near person") or no place: last_seen_msg already says it
+                        msg = f"Your {object_name} was {last_seen_msg}"
                     logger.info(f"[OK] Voice find: {msg}")
                     # Start live camera guidance (speaks msg immediately)
                     self.find_guide.start(object_name, msg)
@@ -445,7 +453,9 @@ class LaptopMLServer:
 
                     # Display on laptop
                     if self.show_display:
+                        t_disp_start = time.perf_counter()
                         self.display_frame(frame, result, ultrasonic_distance)
+                        self._stage_ms['display'] += (time.perf_counter() - t_disp_start) * 1000.0
 
                     # Stats every 30 frames
                     self.frame_count += 1
@@ -460,6 +470,16 @@ class LaptopMLServer:
                             f"Mem: {len(result['remembered'])} | "
                             f"Audio: {'ON' if self.audio_enabled else 'OFF'}"
                         )
+                        logger.info(
+                            f"STAGES avg ms/frame (last 30): "
+                            f"detect={self._stage_ms['detect'] / 30:.1f} "
+                            f"memory={self._stage_ms['memory'] / 30:.1f} "
+                            f"face={self._stage_ms['face'] / 30:.1f} "
+                            f"display={self._stage_ms['display'] / 30:.1f} "
+                            f"total_ml={self._stage_ms['total_ml'] / 30:.1f}"
+                        )
+                        for k in self._stage_ms:
+                            self._stage_ms[k] = 0.0
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON: {e}")
@@ -477,6 +497,7 @@ class LaptopMLServer:
 
     def process_ml(self, frame, ultrasonic_distance, button_pressed):
         """Process frame with ALL ML models and features"""
+        t_ml_start = time.perf_counter()
         result = {
             'objects': [],
             'faces': [],
@@ -489,7 +510,9 @@ class LaptopMLServer:
 
         try:
             # ── 1. Object Detection (YOLOv8) ──
+            t_detect_start = time.perf_counter()
             detections = self.object_detector.detect(frame)
+            self._stage_ms['detect'] += (time.perf_counter() - t_detect_start) * 1000.0
 
             # Store for voice commands
             self.current_frame = frame.copy()
@@ -514,6 +537,7 @@ class LaptopMLServer:
                 })
 
             # ── 2. Object Memory – Recognize remembered objects ──
+            t_mem_start = time.perf_counter()
             remembered_objects = []
             object_to_custom_name = {}
 
@@ -588,7 +612,9 @@ class LaptopMLServer:
                                 )
                             elif match_tier == 'ambiguous':
                                 # Audio with cooldown for ambiguous
-                                if self.audio_enabled:
+                                if (self.audio_enabled
+                                        and time.time() >= self.ambiguous_mute_until.get(custom_name, 0)
+                                        and not (self.find_guide and self.find_guide.is_active)):
                                     now = time.time()
                                     last = self.last_remembered_announce.get(custom_name, 0)
                                     if (now - last) > self.remember_announce_cooldown:
@@ -630,9 +656,11 @@ class LaptopMLServer:
                         self.enrollment_active = False
                         self.enrollment_target_obj = None
                         self.enrollment_frames_captured = 0
+            self._stage_ms['memory'] += (time.perf_counter() - t_mem_start) * 1000.0
 
-            # ── 3. Face Recognition (every 3 frames) ──
-            if self.frame_count % 3 == 0:
+            # ── 3. Face Recognition (every FACE_RECOGNITION_FRAME_INTERVAL frames) ──
+            t_face_start = time.perf_counter()
+            if self.frame_count % config.FACE_RECOGNITION_FRAME_INTERVAL == 0:
                 faces = self.face_recognizer.recognize_faces(frame)
 
                 self.last_recognized_faces = [
@@ -657,6 +685,7 @@ class LaptopMLServer:
                             result['audio_commands'].append({
                                 'type': 'social', 'text': msg
                             })
+            self._stage_ms['face'] += (time.perf_counter() - t_face_start) * 1000.0
 
             # ── 4. Spatial Navigation (obstacle avoidance) ──
             if self.navigation_enabled and not self.enrollment_active:
@@ -698,6 +727,8 @@ class LaptopMLServer:
             logger.error(f"ML processing error: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            self._stage_ms['total_ml'] += (time.perf_counter() - t_ml_start) * 1000.0
 
         return result
 
@@ -1000,9 +1031,10 @@ class LaptopMLServer:
                         print(f"[FAIL] Haven't seen {item}")
 
         elif key == ord('c'):
-            # Confirm pending ambiguous match
-            if self.object_memory.pending_confirmation:
-                name = self.object_memory.pending_confirmation.get('custom_name')
+            # Confirm pending ambiguous match (expires after 15s)
+            pending = self.object_memory.get_pending_match()
+            if pending:
+                name = pending.get('custom_name')
                 pos = self.gps_tracker.get_position() if self.gps_tracker else None
                 lat, lon = (pos[0], pos[1]) if pos else (None, None)
                 if config.INDOOR_MODE:
@@ -1016,21 +1048,27 @@ class LaptopMLServer:
                     gps_lat=lat,
                     gps_lon=lon
                 )
-                if self.audio_enabled:
-                    self.audio.speak_social("Confirmed")
-                logger.info(f"[OK] Confirmed match for '{name}' (location: {loc_str or '(unknown location)'})")
+                if success:
+                    self.ambiguous_mute_until[name] = time.time() + self.CONFIRM_MUTE_SECONDS
+                    if self.audio_enabled:
+                        self.audio.speak_social("Confirmed")
+                    logger.info(f"[OK] Confirmed match for '{name}' (location: {loc_str or '(unknown location)'})")
+                else:
+                    logger.warning(f"[FAIL] Could not record confirmed match for '{name}'")
             else:
-                logger.info("No pending match to confirm")
+                logger.info("No pending match to confirm (none, or it expired after 15s)")
 
         elif key == ord('x'):
             # Reject pending ambiguous match
-            if self.object_memory.pending_confirmation:
+            pending = self.object_memory.get_pending_match()
+            if pending:
+                self.ambiguous_mute_until[pending['custom_name']] = time.time() + self.REJECT_MUTE_SECONDS
                 self.object_memory.clear_pending_match()
                 if self.audio_enabled:
                     self.audio.speak_social("Okay, never mind.")
                 logger.info("[OK] Rejected pending match")
             else:
-                logger.info("No pending match to reject")
+                logger.info("No pending match to reject (none, or it expired after 15s)")
 
         elif key == ord('a'):
             self.audio_enabled = not self.audio_enabled
@@ -1207,7 +1245,14 @@ class LaptopMLServer:
                     if isinstance(data, dict) and 'latitude' in data and 'longitude' in data:
                         lat = data['latitude']
                         lon = data['longitude']
-                        if lat is not None and lon is not None and self.gps_tracker:
+                        self._poll_count = getattr(self, '_poll_count', 0) + 1
+                        if self._poll_count % 5 == 1:
+                            logger.info(f"Phone GPS poll: source={data.get('source')}")
+                        # Only accept genuine phone fixes. mobile_backend also answers
+                        # with IP/mock fallbacks; treating those as 'phone' would keep
+                        # them looking fresh forever and mask a missing phone report.
+                        if (data.get('source') == 'phone' and lat is not None
+                                and lon is not None and self.gps_tracker):
                             self.gps_tracker.set_phone_position(lat, lon)
             except (requests.exceptions.RequestException, Exception) as e:
                 logger.debug(f"Mobile backend location polling: {e}")

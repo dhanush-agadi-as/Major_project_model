@@ -91,9 +91,14 @@ class CameraReader:
             raise RuntimeError(
                 f"CameraReader: cannot open camera index {self._cam_index}"
             )
+        self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         self._cap.set(cv2.CAP_PROP_FPS,          self._fps)
+        logger.info("Camera negotiated: %dx%d @ %.1f fps",
+                    int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                    int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                    self._cap.get(cv2.CAP_PROP_FPS))
 
         # Warm up: discard a few frames that may be over-exposed / dark
         for _ in range(self._warmup_frames):

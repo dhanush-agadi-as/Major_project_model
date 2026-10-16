@@ -309,10 +309,22 @@ class ObjectMemory:
         
         logger.info(f"No sighting recorded for '{custom_name}'")
         return None
-        
+
+    PENDING_CONFIRM_TIMEOUT_SECONDS = 15.0
+
+    def get_pending_match(self):
+        """Return the pending ambiguous match, or None. A match older than
+        PENDING_CONFIRM_TIMEOUT_SECONDS is discarded so C/X can't act on a stale sighting."""
+        p = self.pending_confirmation
+        if p and (time.time() - p['timestamp']) > self.PENDING_CONFIRM_TIMEOUT_SECONDS:
+            logger.info(f"Pending match for '{p['custom_name']}' expired")
+            self.pending_confirmation = None
+            return None
+        return p
+
     def confirm_pending_match(self, location: str = None, gps_lat: float = None, gps_lon: float = None) -> bool:
         """Confirm the currently pending ambiguous match and update its location."""
-        if not self.pending_confirmation:
+        if not self.get_pending_match():
             return False
             
         custom_name = self.pending_confirmation['custom_name']

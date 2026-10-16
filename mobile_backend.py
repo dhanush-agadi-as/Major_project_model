@@ -193,6 +193,7 @@ def locate_page():
   <div id="status">Requesting permission...</div>
   <script>
     const statusEl = document.getElementById('status');
+    let lastPos = null;
     if (!navigator.geolocation) {{
       statusEl.textContent = 'Geolocation is not supported by this browser.';
       statusEl.className = 'err';
@@ -200,6 +201,7 @@ def locate_page():
       navigator.geolocation.watchPosition(
         (pos) => {{
           const {{ latitude, longitude, accuracy }} = pos.coords;
+          lastPos = {{ latitude, longitude, accuracy }};
           fetch('/api/location', {{
             method: 'POST',
             headers: {{ 'Content-Type': 'application/json' }},
@@ -225,6 +227,18 @@ def locate_page():
         }},
         {{ enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }}
       );
+      // Keep-alive: watchPosition only fires when the position changes, but the server
+      // treats a fix as stale after 30s. Re-send the last fix every 5s.
+      setInterval(() => {{
+        if (lastPos) {{
+          fetch('/api/location', {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify(lastPos)
+          }}).catch(() => {{}});
+        }}
+      }}, 5000);
+      if ('wakeLock' in navigator) {{ navigator.wakeLock.request('screen').catch(() => {{}}); }}
     }}
   </script>
 </body>

@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # TODO: recalibrate for actual camera in use, see calibrate_focal.py
-FOCAL_PX: float = 530.0
+FOCAL_PX: float = 1100.0
 
 # Approximate real-world longest dimension (cm) for common YOLO classes.
 # Used for the pinhole camera distance estimate:  d = f * size / pixels
