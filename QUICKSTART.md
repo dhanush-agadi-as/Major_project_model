@@ -24,29 +24,41 @@ Expected output: `✓ Database initialized successfully`
 
 ---
 
-### Step 3: Test with Webcam (2 minutes)
+---
+
+### Step 3: Test with Webcam & Voice-Only Interface (2 minutes)
 
 ```powershell
-# Run full integration test
-python test\test_integration.py
+# Run laptop wireless server / pipeline
+python wireless\laptop_server.py
 ```
 
-**Choose option 1** when prompted.
+VisionMate is now completely **VOICE-ONLY**:
+- 🎙️ **Wake Word**: Continuous listening — say `"Hey Vision"` (or `"Vision"`) then your command.
+- 🔔 **Wake Word Alone**: Say `"Hey Vision"`, hear a short ready beep, then speak your command within 6 seconds.
+- 🗣️ **One-shot Command**: Say `"Hey Vision find my mobile"` or `"Hey Vision stop finding"` in one sentence.
+- 💬 **Confirmations**: When VisionMate asks `"Is this your <object>?"` or `"Say yes to confirm"`, reply `"yes"`, `"correct"`, `"yeah"`, or `"no"`, `"wrong"`, `"nope"` within 6 seconds without repeating the wake word.
+- 📝 **Auto-Read Voice Notes**: Say `"Hey Vision take note <text>"` to save a note. VisionMate immediately reads it back: `"Saved. You said: <text>"`.
+- 🔇 **Echo Suppression**: TTS audio is automatically suppressed while VisionMate is speaking and for 0.25s after speech finishes.
+- ⚙️ **Keyboard Fallback**: Fully disabled by default (`KEYBOARD_FALLBACK = False` in `config.py`). Set to `True` only for debug hotkeys (`Q` to quit).
 
-This will:
-- ✅ Detect objects in real-time
-- ✅ Recognize faces
-- ✅ Detect traffic signals
-- ✅ Track items
-- ✅ Provide audio feedback
-
-**Controls in the test**:
-- Press **Q** to quit
-- Press **E** to enroll a face
-- Press **F** to find an item
-- Press **A** to toggle audio
-
----
+**Voice Commands Reference**:
+- `"remember this <object>"` - Enroll custom object currently in view
+- `"find my <object>"` - Search and guide to an enrolled object
+- `"stop finding"` / `"stop search"` - Cancel active object search
+- `"enroll face <name>"` - Enroll person's face in camera view
+- `"take note <text>"` - Save a voice note (auto-read back)
+- `"read notes"` - Read all saved voice notes
+- `"delete note <number>"` - Delete a specific voice note
+- `"clear notes"` - Delete all voice notes
+- `"navigate"` / `"stop navigation"` - Toggle obstacle navigation
+- `"navigate to <destination>"` / `"stop GPS"` - GPS walking directions
+- `"advance GPS"` - Simulate GPS progress in mock mode
+- `"toggle audio"` - Turn audio announcements on/off
+- `"list all items"` - Spoken list of remembered objects
+- `"show database"` - Spoken summary of database contents
+- `"shut down"` / `"quit"` - Request shutdown (confirms on `"yes"`)
+- `"help"` - Spoken command list
 
 ## 🎯 Quick Test Sequence
 

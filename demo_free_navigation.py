@@ -53,7 +53,8 @@ class FreeNavigationDemo:
         )
         
         # Camera
-        self.cap = cv2.VideoCapture(0)
+        from camera_source import open_camera
+        self.cap = open_camera()
         
         # State
         self.navigating = False

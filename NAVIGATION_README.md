@@ -363,7 +363,8 @@ sensor = UltrasonicSensor(mock_mode=True)
 sensor.start()
 fusion = ObstacleFusion(sensor)
 
-cap = cv2.VideoCapture(0)
+from camera_source import open_camera
+cap = open_camera()
 
 while True:
     ret, frame = cap.read()

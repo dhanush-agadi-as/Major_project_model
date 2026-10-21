@@ -75,7 +75,7 @@ class OSMNavigator:
                 display_name = data[0]['display_name']
                 
                 logger.info(f"[OK] Found: {display_name}")
-                logger.info(f"  Coordinates: {lat:.6f}, {lon:.6f}")
+                logger.debug(f"  Coordinates: {lat:.6f}, {lon:.6f}")
                 
                 return (lat, lon)
             else:

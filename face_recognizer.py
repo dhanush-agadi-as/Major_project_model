@@ -6,6 +6,7 @@ Falls back to OpenCV if InsightFace is not available
 import cv2
 import numpy as np
 import logging
+import time
 from typing import List, Dict, Optional, Tuple
 from config import FACE_RECOGNITION_THRESHOLD, FACE_MODEL, FACE_DET_SIZE
 from database import VisionMateDB
@@ -15,11 +16,38 @@ logger = logging.getLogger(__name__)
 # Try to import InsightFace, fall back to OpenCV if not available
 INSIGHTFACE_AVAILABLE = False
 try:
+    import onnxruntime as ort
+    from insightface.model_zoo.model_zoo import PickableInferenceSession
+    _orig_pickable_session_init = PickableInferenceSession.__init__
+
+    def _patched_pickable_session_init(self, model_path, **kwargs):
+        sess_options = kwargs.get('sess_options')
+        if sess_options is None:
+            sess_options = ort.SessionOptions()
+        try:
+            from config import FACE_THREADS
+            sess_options.intra_op_num_threads = FACE_THREADS
+        except Exception:
+            sess_options.intra_op_num_threads = 4
+        sess_options.inter_op_num_threads = 1
+        kwargs['sess_options'] = sess_options
+        _orig_pickable_session_init(self, model_path, **kwargs)
+
+    PickableInferenceSession.__init__ = _patched_pickable_session_init
+
     from insightface.app import FaceAnalysis
     INSIGHTFACE_AVAILABLE = True
 except ImportError:
     print("[WARN] InsightFace not available - using OpenCV fallback (detection only, no recognition)")
     INSIGHTFACE_AVAILABLE = False
+except Exception as e:
+    logger.debug(f"InsightFace setup notice: {e}")
+    try:
+        from insightface.app import FaceAnalysis
+        INSIGHTFACE_AVAILABLE = True
+    except Exception:
+        INSIGHTFACE_AVAILABLE = False
+
 
 
 class FaceRecognizer:
@@ -50,6 +78,16 @@ class FaceRecognizer:
         self.db = db if db else VisionMateDB()
         
         self.recent_identities = {}
+        # IoU face tracking & throttling
+        self.face_tracks = {}  # track_id -> dict
+        self._next_face_track_id = 1
+        self.iou_threshold = 0.3
+        self.track_max_age = 2.0
+        self.last_frame_time_ms = 0.0
+        self.last_detection_time = -999.0
+        self.last_detected_faces = []
+        self.last_recognition_results = []
+
         self.enrollment_buffer = {
             'images': [],
             'embeddings': [],
@@ -67,12 +105,16 @@ class FaceRecognizer:
         """Load all known faces from database"""
         self.known_faces = self.db.get_all_faces()
     
-    def detect_faces(self, frame: np.ndarray) -> List[Dict]:
+    def detect_faces(self, frame: np.ndarray, yolo_has_person: bool = True, current_time: Optional[float] = None) -> List[Dict]:
         """
-        Detect faces in frame and extract embeddings
+        Detect faces in frame and extract embeddings.
+        Runs at most 5 times per second and only when YOLO sees a person.
+        Reuses the last result between runs.
         
         Args:
             frame: Input image (BGR format)
+            yolo_has_person: True if YOLO sees a person in the frame
+            current_time: Optional explicit timestamp (seconds)
             
         Returns:
             List of face dictionaries containing:
@@ -80,6 +122,17 @@ class FaceRecognizer:
                 - embedding: 512-d face embedding (or None if using OpenCV)
                 - confidence: Detection confidence
         """
+        now = current_time if current_time is not None else time.time()
+        if not yolo_has_person:
+            self.last_detected_faces = []
+            return []
+
+        # Run detection at most 5 times per second (0.2s interval)
+        if (now - self.last_detection_time) < 0.20 and self.last_detected_faces:
+            return self.last_detected_faces
+
+        self.last_detection_time = now
+
         if self.insightface_available:
             # Use InsightFace
             faces = self.app.get(frame)
@@ -104,6 +157,7 @@ class FaceRecognizer:
                 }
                 results.append(face_dict)
             
+            self.last_detected_faces = results
             return results
         else:
             # Use OpenCV fallback (detection only, no embeddings)
@@ -123,81 +177,191 @@ class FaceRecognizer:
                 }
                 results.append(face_dict)
             
+            self.last_detected_faces = results
             return results
     
-    def recognize_faces(self, frame: np.ndarray) -> List[Dict]:
+    def _compute_iou(self, box1: List[int], box2: List[int]) -> float:
         """
-        Detect and recognize faces in frame
-        
+        Calculate Intersection over Union (IoU) between two bounding boxes
+        box format: [x1, y1, x2, y2]
+        """
+        x1_1, y1_1, x2_1, y2_1 = box1
+        x1_2, y1_2, x2_2, y2_2 = box2
+
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return 0.0
+
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+        area1 = max(0, x2_1 - x1_1) * max(0, y2_1 - y1_1)
+        area2 = max(0, x2_2 - x1_2) * max(0, y2_2 - y1_2)
+        union = area1 + area2 - intersection
+
+        if union <= 0:
+            return 0.0
+        return float(intersection / union)
+
+    def _prune_tracks(self, now: float, max_age: float = 2.0):
+        """Remove tracks that haven't been seen for more than max_age seconds"""
+        to_del = [tid for tid, trk in self.face_tracks.items() if (now - trk['last_seen']) > max_age]
+        for tid in to_del:
+            del self.face_tracks[tid]
+
+    def recognize_faces(self, frame: np.ndarray, current_time: Optional[float] = None,
+                        frame_time_ms: Optional[float] = None, yolo_has_person: bool = True) -> List[Dict]:
+        """
+        Detect and recognize faces in frame.
+        - Skips entirely when YOLO sees no person or when frame time is above 150 ms
+        - Runs detection at most 5 times per second and reuses last result between runs
+        - Only processes the 2 largest faces per frame
+        - Uses an IoU tracker so each tracked face keeps its identity
+        - Recognises a given track at most once per second (and once at first sight)
+
         Args:
             frame: Input image (BGR format)
-            
+            current_time: Optional explicit timestamp (seconds)
+            frame_time_ms: Optional frame processing time in ms
+            yolo_has_person: True if YOLO sees a person in the frame
+
         Returns:
             List of recognized faces with names or 'Unknown'
         """
-        detected_faces = self.detect_faces(frame)
-        
+        now = current_time if current_time is not None else time.time()
+
+        if not yolo_has_person:
+            self.last_recognition_results = []
+            self._prune_tracks(now, self.track_max_age)
+            return []
+
+        if frame_time_ms is not None:
+            self.last_frame_time_ms = frame_time_ms
+
+        if self.last_frame_time_ms > 150.0:
+            return self.last_recognition_results
+
+        # Run detection at most 5 times per second (interval >= 0.2s); reuse last result between runs
+        if (now - self.last_detection_time) < 0.20 and self.last_recognition_results:
+            return self.last_recognition_results
+
+        detected_faces = self.detect_faces(frame, yolo_has_person=yolo_has_person, current_time=now)
+        if not detected_faces:
+            self._prune_tracks(now, self.track_max_age)
+            self.last_recognition_results = []
+            return []
+
+        # Only the 2 largest faces per frame
+        if len(detected_faces) > 2:
+            detected_faces.sort(
+                key=lambda f: (f['bbox'][2] - f['bbox'][0]) * (f['bbox'][3] - f['bbox'][1]),
+                reverse=True
+            )
+            detected_faces = detected_faces[:2]
+
         results = []
-        for face in detected_faces:
-            face_embedding = face['embedding']
-            
-            if face_embedding is None:
-                # OpenCV fallback
-                name = 'Unknown'
-                distance = 1.0
-                margin = 0.0
-            else:
-                # Match against known faces
+        unmatched_detections = list(range(len(detected_faces)))
+        unmatched_tracks = set(self.face_tracks.keys())
+
+        # Match detected faces to existing tracks using IoU >= threshold
+        matches = []
+        for det_idx in unmatched_detections:
+            det_box = detected_faces[det_idx]['bbox']
+            for trk_id in unmatched_tracks:
+                trk_box = self.face_tracks[trk_id]['bbox']
+                iou = self._compute_iou(det_box, trk_box)
+                if iou >= self.iou_threshold:
+                    matches.append((iou, det_idx, trk_id))
+
+        # Sort matches by IoU descending (greedy matching)
+        matches.sort(key=lambda x: x[0], reverse=True)
+        matched_dets = set()
+        matched_trks = set()
+
+        for iou, det_idx, trk_id in matches:
+            if det_idx in matched_dets or trk_id in matched_trks:
+                continue
+            matched_dets.add(det_idx)
+            matched_trks.add(trk_id)
+
+            face = detected_faces[det_idx]
+            track = self.face_tracks[trk_id]
+            track['bbox'] = face['bbox']
+            track['confidence'] = face.get('confidence', 0.9)
+            track['last_seen'] = now
+
+            # Recognise a given track at most once per second (and once at first sight)
+            if (now - track['last_rec_time']) >= 1.0:
+                face_embedding = face.get('embedding')
+                if face_embedding is not None:
+                    name, distance, margin = self._match_face(face_embedding)
+                    track['name'] = name
+                    track['distance'] = distance
+                    track['margin'] = margin
+                track['last_rec_time'] = now
+                track['rec_count'] += 1
+
+            results.append({
+                'bbox': face['bbox'],
+                'name': track['name'],
+                'distance': track['distance'],
+                'margin': track['margin'],
+                'confidence': track['confidence'],
+                'track_id': trk_id
+            })
+
+        # New detections: first sight! (recognize once at first sight)
+        for det_idx in unmatched_detections:
+            if det_idx in matched_dets:
+                continue
+            face = detected_faces[det_idx]
+            face_embedding = face.get('embedding')
+            if face_embedding is not None:
                 name, distance, margin = self._match_face(face_embedding)
-            
-            result = {
+            else:
+                name, distance, margin = 'Unknown', 1.0, 0.0
+
+            trk_id = self._next_face_track_id
+            self._next_face_track_id += 1
+
+            self.face_tracks[trk_id] = {
+                'track_id': trk_id,
                 'bbox': face['bbox'],
                 'name': name,
                 'distance': distance,
                 'margin': margin,
-                'confidence': face['confidence']
+                'confidence': face.get('confidence', 0.9),
+                'first_seen': now,
+                'last_seen': now,
+                'last_rec_time': now,
+                'rec_count': 1
             }
-            results.append(result)
-            
-            if name != 'Unknown':
-                # Short-term identity persistence
-                # Store the most recently seen face centers to bias future recognitions
-                center_x = (face['bbox'][0] + face['bbox'][2]) / 2
-                center_y = (face['bbox'][1] + face['bbox'][3]) / 2
-                self.recent_identities[name] = {
+
+            results.append({
+                'bbox': face['bbox'],
+                'name': name,
+                'distance': distance,
+                'margin': margin,
+                'confidence': face.get('confidence', 0.9),
+                'track_id': trk_id
+            })
+
+        self._prune_tracks(now, self.track_max_age)
+
+        # Update recent_identities for short-term identity persistence
+        for r in results:
+            if r['name'] != 'Unknown':
+                center_x = (r['bbox'][0] + r['bbox'][2]) / 2
+                center_y = (r['bbox'][1] + r['bbox'][3]) / 2
+                self.recent_identities[r['name']] = {
                     'center': (center_x, center_y),
-                    'timestamp': cv2.getTickCount() / cv2.getTickFrequency(),
-                    'last_distance': distance
+                    'timestamp': now,
+                    'last_distance': r['distance']
                 }
-        
-        # Identity persistence logic: if a face drops to unknown but was recently recognized nearby
-        current_time = cv2.getTickCount() / cv2.getTickFrequency()
-        # Clean up old identities (e.g., older than 2 seconds)
-        self.recent_identities = {
-            n: data for n, data in self.recent_identities.items()
-            if current_time - data['timestamp'] < 2.0
-        }
-        
-        for result in results:
-            if result['name'] == 'Unknown' and result.get('embedding') is not None:
-                # Check if it matches a recent identity by location
-                center_x = (result['bbox'][0] + result['bbox'][2]) / 2
-                center_y = (result['bbox'][1] + result['bbox'][3]) / 2
-                
-                best_recent_name = None
-                best_recent_dist = 50.0  # pixel distance
-                
-                for name, data in self.recent_identities.items():
-                    px_dist = np.sqrt((center_x - data['center'][0])**2 + (center_y - data['center'][1])**2)
-                    if px_dist < best_recent_dist:
-                        best_recent_dist = px_dist
-                        best_recent_name = name
-                
-                # If we're very close to where a known person just was, and distance isn't terrible
-                if best_recent_name and result['distance'] < self.threshold + 0.15:
-                    result['name'] = best_recent_name
-                    # Note: distance remains the slightly higher value so caller can see it was forced
-        
+
+        self.last_recognition_results = results
         return results
     
     def _match_face(self, embedding: np.ndarray) -> Tuple[str, float, float]:
@@ -356,6 +520,38 @@ class FaceRecognizer:
         self._load_known_faces()
         
         return True
+
+    def reload_known_faces(self):
+        """Reload known faces from database"""
+        self._load_known_faces()
+
+    def delete_face(self, name: str) -> bool:
+        """Delete face by name and reload known faces"""
+        deleted = False
+        if hasattr(self.db, 'delete_face_by_name'):
+            deleted = self.db.delete_face_by_name(name)
+        if deleted:
+            self._load_known_faces()
+            # Clean up recent identities if deleted
+            self.recent_identities.pop(name, None)
+            for tid, trk in list(self.face_tracks.items()):
+                if trk.get('name') == name:
+                    trk['name'] = 'Unknown'
+        return deleted
+
+    def rename_face(self, old_name: str, new_name: str) -> bool:
+        """Rename face from old_name to new_name and reload known faces"""
+        renamed = False
+        if hasattr(self.db, 'rename_face'):
+            renamed = self.db.rename_face(old_name, new_name)
+        if renamed:
+            self._load_known_faces()
+            if old_name in self.recent_identities:
+                self.recent_identities[new_name] = self.recent_identities.pop(old_name)
+            for tid, trk in list(self.face_tracks.items()):
+                if trk.get('name') == old_name:
+                    trk['name'] = new_name
+        return renamed
     
     def draw_faces(self, frame: np.ndarray, recognized_faces: List[Dict]) -> np.ndarray:
         """

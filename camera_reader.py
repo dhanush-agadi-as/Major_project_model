@@ -85,16 +85,17 @@ class CameraReader:
     # ------------------------------------------------------------------
 
     def start(self) -> "CameraReader":
-        """Open the webcam and start the reader thread."""
-        self._cap = cv2.VideoCapture(self._cam_index, self._backend)
+        """Open the camera and start the reader thread."""
+        from camera_source import open_camera
+        self._cap = open_camera(self._cam_index, width=self._width, height=self._height, fps=self._fps)
         if not self._cap.isOpened():
             raise RuntimeError(
-                f"CameraReader: cannot open camera index {self._cam_index}"
+                f"CameraReader: cannot open camera source {self._cam_index}"
             )
-        self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-        self._cap.set(cv2.CAP_PROP_FPS,          self._fps)
+        try:
+            self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        except Exception:
+            pass
         logger.info("Camera negotiated: %dx%d @ %.1f fps",
                     int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                     int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),

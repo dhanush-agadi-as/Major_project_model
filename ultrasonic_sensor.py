@@ -21,15 +21,28 @@ class UltrasonicSensor:
     Reads distance measurements via serial connection
     """
     
-    def __init__(self, mock_mode: bool = ULTRASONIC_MOCK_MODE):
-        self.mock_mode = mock_mode
+    def __init__(self, mock_mode: Optional[bool] = None):
+        try:
+            import config
+            use_pi = getattr(config, 'USE_PI_CAMERA', False)
+        except Exception:
+            use_pi = False
+
+        if mock_mode is None:
+            self.mock_mode = False if use_pi else ULTRASONIC_MOCK_MODE
+        else:
+            self.mock_mode = mock_mode
+
         self.current_distance = None
         self.last_update = None
         self.is_running = False
         self.serial_port = None
+        self._warned_no_distance = False
         
-        if mock_mode:
+        if self.mock_mode:
             logger.info("Ultrasonic Sensor initialized in MOCK mode")
+        elif use_pi:
+            logger.info("Ultrasonic Sensor: Pi is source (USE_PI_CAMERA=True). Local serial port skipped.")
         else:
             logger.info(f"Ultrasonic Sensor initializing on {ULTRASONIC_PORT}")
             try:
@@ -45,7 +58,7 @@ class UltrasonicSensor:
     def start(self):
         """Start reading sensor data"""
         self.is_running = True
-        if not self.mock_mode:
+        if not self.mock_mode and self.serial_port is not None:
             self.reading_thread = threading.Thread(target=self._read_sensor_loop, daemon=True)
             self.reading_thread.start()
         logger.info("Ultrasonic sensor reading started")
@@ -66,26 +79,32 @@ class UltrasonicSensor:
         """
         if self.mock_mode:
             return self._get_mock_distance()
-        else:
-            return self.current_distance
+        if self.current_distance is None:
+            try:
+                import config
+                use_pi = getattr(config, 'USE_PI_CAMERA', False)
+            except Exception:
+                use_pi = False
+            if use_pi and not getattr(self, '_warned_no_distance', False):
+                logger.warning("No ultrasonic distance received from Pi")
+                self._warned_no_distance = True
+            return None
+        return self.current_distance
+
     
     def _get_mock_distance(self) -> float:
         """
         Generate simulated distance readings
-        Simulates realistic sensor behavior with some noise
+        Mock mode must never generate obstacle warnings
         """
-        # Vary distance randomly between 30 and 300 cm
-        # Occasionally simulate obstacles closer than threshold
-        if random.random() < 0.2:  # 20% chance of close obstacle
-            distance = random.uniform(20, ULTRASONIC_OBSTACLE_THRESHOLD)
-        else:
-            distance = random.uniform(ULTRASONIC_OBSTACLE_THRESHOLD, 300)
+        # Vary distance safely above threshold (no fake obstacle warnings)
+        distance = random.uniform(ULTRASONIC_OBSTACLE_THRESHOLD + 20, 300)
         
         # Add some noise
         distance += random.uniform(-5, 5)
         
-        # Clamp to valid range
-        distance = max(2, min(distance, ULTRASONIC_MAX_DISTANCE))
+        # Clamp to valid range above obstacle threshold
+        distance = max(ULTRASONIC_OBSTACLE_THRESHOLD + 5, min(distance, ULTRASONIC_MAX_DISTANCE))
         
         self.current_distance = distance
         self.last_update = time.time()
@@ -122,6 +141,8 @@ class UltrasonicSensor:
     
     def is_obstacle_close(self) -> bool:
         """Check if obstacle is closer than threshold"""
+        if self.mock_mode:
+            return False
         distance = self.get_distance()
         if distance is None:
             return False
@@ -134,6 +155,13 @@ class UltrasonicSensor:
         Returns:
             Dictionary with distance and warning level
         """
+        if self.mock_mode:
+            return {
+                'available': False,
+                'distance': None,
+                'warning_level': 'clear',
+                'below_threshold': False
+            }
         distance = self.get_distance()
         
         if distance is None:

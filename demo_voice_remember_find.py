@@ -16,6 +16,7 @@ from database import VisionMateDB
 from object_memory import ObjectMemory
 from voice_command_system import VoiceCommandSystem
 from audio_feedback import get_audio_feedback
+from camera_source import open_camera
 
 def main():
     print("=" * 70)
@@ -106,8 +107,8 @@ def main():
     voice.register_command_handler('find', handle_find)
     voice.register_command_handler('list', handle_list)
     
-    # Open webcam
-    cap = cv2.VideoCapture(0)
+    # Open camera source (Pi stream or local webcam)
+    cap = open_camera()
     if not cap.isOpened():
         print("[FAIL] Cannot open webcam")
         return

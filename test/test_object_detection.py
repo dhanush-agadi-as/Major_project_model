@@ -3,6 +3,7 @@ Test Object Detection Module
 Tests YOLOv8 detection with sample images
 """
 import cv2
+import numpy as np
 import sys
 import os
 
@@ -10,6 +11,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from object_detector import ObjectDetector
+from camera_source import open_camera
 
 
 def test_object_detection_webcam():
@@ -20,7 +22,7 @@ def test_object_detection_webcam():
     
     detector = ObjectDetector()
     
-    cap = cv2.VideoCapture(0)
+    cap = open_camera()
     if not cap.isOpened():
         print("[FAIL] Could not open webcam, testing with static image instead")
         test_object_detection_static()
@@ -86,34 +88,21 @@ def test_object_detection_static():
     
     detector = ObjectDetector()
     
-    # Create a test image
-    frame = cv2.imread('test_data/sample_image.jpg') if os.path.exists('test_data/sample_image.jpg') else None
-    
-    if frame is None:
-        print("No sample image found, creating blank test frame")
-        frame = cv2.rectangle(
-            cv2.imread(cv2.samples.findFile('lena.jpg')) if os.path.exists(cv2.samples.findFile('lena.jpg'))
-            else (255 * np.ones((480, 640, 3), dtype=np.uint8)),
-            (100, 100), (300, 400), (0, 255, 0), -1
-        )
+    # Blank 480x640 frame with green rectangle
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.rectangle(frame, (100, 100), (300, 400), (0, 255, 0), -1)
     
     print("\n🖼️  Processing test image...")
     
     # Detect objects
     detections = detector.detect(frame)
+    assert isinstance(detections, list)
     
     print(f"\n[OK] Detection complete!")
     print(f"  Found {len(detections)} objects:")
     
     for i, det in enumerate(detections, 1):
         print(f"    {i}. {det['class_name']} (confidence: {det['confidence']:.2f})")
-    
-    # Draw and display
-    annotated = detector.draw_detections(frame, detections)
-    cv2.imshow('Object Detection Test', annotated)
-    print("\nPress any key to close...")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
 
 
 def test_specific_classes():

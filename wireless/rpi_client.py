@@ -23,44 +23,102 @@ import pyttsx3
 from threading import Thread
 import logging
 import numpy as np
+import os
+import sys
+from typing import Optional, Any
+
+# Add parent directory to path to import VisionMate config
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import config
+except ImportError:
+    config = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class RaspberryPiClient:
-    def __init__(self, server_ip="192.168.1.100", server_port=8081):
+    def __init__(
+        self,
+        server_ip="127.0.0.1",
+        server_port=8081,
+        client_speaks: Optional[bool] = None,
+        camera_source: Optional[Any] = None,
+    ):
         """
         Initialize Raspberry Pi client
         
         Args:
-            server_ip: IP address of laptop running ML server
+            server_ip: IP address of laptop running ML server (default: 127.0.0.1)
             server_port: WebSocket port (default 8081)
+            client_speaks: Whether client plays speech (default: None, falls back to config.CLIENT_SPEAKS)
+            camera_source: Optional camera index or stream URL
         """
+        self.server_ip = server_ip
+        self.server_port = server_port
         self.server_url = f"ws://{server_ip}:{server_port}"
+        self.client_speaks = client_speaks
+        self.camera_source = camera_source
         self.camera = None
         self.picamera2 = None
         self.use_picamera2 = False
         self.use_test_frames = False
         self.esp32_serial = None
+        self.esp32_last_time = 0.0
         self.audio_engine = None
         self.audio_queue = queue.Queue()
         self.audio_worker_thread = None
         self.last_nav_announcement = ""
         self.last_nav_announcement_time = 0
+        self.last_nav_log = ""
+        self.last_nav_log_time = 0.0
+        self.last_recognized_face_name = None
+        self.last_recognized_face_log_time = 0.0
         self.running = False
         
-        # Sensor data
-        self.ultrasonic_distance = 999.0
+        # Sensor data (None when ESP32 is not connected)
+        self.ultrasonic_distance = None
         self.button_pressed = False
+        self.distance_client = None
         
         # Performance tracking
         self.frame_count = 0
         self.start_time = time.time()
+
+    def _should_client_speak(self) -> bool:
+        """Check whether client-side audio output is enabled"""
+        if self.client_speaks is not None:
+            return self.client_speaks
+        if config is not None:
+            return getattr(config, 'CLIENT_SPEAKS', False)
+        return False
         
-    def initialize(self):
+    def initialize(self, dry_run: bool = False):
         """Initialize all hardware components"""
         logger.info("Initializing Raspberry Pi Client...")
+        
+        if dry_run:
+            self.use_test_frames = True
+            # Verify test frame generation and JPEG encoding
+            test_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(test_frame, "DRY RUN", (50, 240),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            _, buffer = cv2.imencode('.jpg', test_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if buffer is None or len(buffer) == 0:
+                raise RuntimeError("Failed to encode test frame during dry-run")
+            logger.info("[OK] Camera initialized (dry run: test frame checks passed)")
+
+            # Verify PIDistanceClient object instantiation without opening network connection
+            from pi_distance_client import PIDistanceClient
+            pi_host = getattr(config, 'PI_HOST', '10.117.98.217') if config else '10.117.98.217'
+            self.distance_client = PIDistanceClient(host=pi_host)
+            logger.info("[OK] ESP32 / Distance Client initialized (dry run: PIDistanceClient object created, network skipped)")
+
+            # Audio engine check
+            logger.info("[OK] Audio queue initialized (dry run: audio worker skipped)")
+            logger.info("[OK] Raspberry Pi Client ready (dry run)!")
+            return True
         
         # Initialize camera - try multiple methods
         camera_initialized = False
@@ -70,10 +128,10 @@ class RaspberryPiClient:
             from picamera2 import Picamera2
             logger.info("Trying picamera2...")
             self.picamera2 = Picamera2()
-            config = self.picamera2.create_preview_configuration(
+            cam_config = self.picamera2.create_preview_configuration(
                 main={"size": (640, 480), "format": "RGB888"}
             )
-            self.picamera2.configure(config)
+            self.picamera2.configure(cam_config)
             self.picamera2.start()
             time.sleep(2)  # Let camera warm up (2s for reliability)
             
@@ -105,55 +163,25 @@ class RaspberryPiClient:
                     pass
                 self.picamera2 = None
         
-        # Method 2: Try OpenCV with V4L2 (for older Raspberry Pi OS)
+        # Method 2: Use open_camera helper (network stream or local camera)
         if not camera_initialized:
             try:
-                logger.info("Trying OpenCV V4L2...")
-                self.camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self.camera.set(cv2.CAP_PROP_FPS, 30)
-                
+                from camera_source import open_camera
+                cam_source = self.camera_source
+                if cam_source is None and config is not None:
+                    cam_source = getattr(config, 'CAMERA_SOURCE', 0)
+                logger.info(f"Opening camera source: {cam_source}...")
+                self.camera = open_camera(cam_source, width=640, height=480, fps=30)
                 ret, test_frame = self.camera.read()
-                if ret and test_frame is not None:
+                if ret and test_frame is not None and test_frame.size > 0:
                     camera_initialized = True
-                    logger.info(f"[OK] Camera initialized with OpenCV (frame: {test_frame.shape})")
+                    logger.info(f"[OK] Camera initialized with open_camera (frame: {test_frame.shape})")
                 else:
-                    logger.warning("OpenCV V4L2 opened but could not read frame")
+                    logger.warning("open_camera opened but could not read frame")
                     self.camera.release()
                     self.camera = None
             except Exception as e:
-                logger.warning(f"OpenCV camera failed: {e}")
-                if self.camera is not None:
-                    try:
-                        self.camera.release()
-                    except Exception:
-                        pass
-                    self.camera = None
-
-        # Method 3: OpenCV with DSHOW (Windows laptop testing fallback).
-        # CAP_V4L2 above is Linux-only (Raspberry Pi); on Windows it "opens"
-        # without erroring but can never read a real frame. DSHOW is the
-        # correct backend for a Windows laptop webcam used during local dev.
-        if not camera_initialized:
-            try:
-                logger.info("Trying OpenCV DSHOW (Windows)...")
-                self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-                self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self.camera.set(cv2.CAP_PROP_FPS, 30)
-
-                ret, test_frame = self.camera.read()
-                if ret and test_frame is not None:
-                    camera_initialized = True
-                    logger.info(f"[OK] Camera initialized with OpenCV DSHOW (frame: {test_frame.shape})")
-                else:
-                    logger.warning("OpenCV DSHOW opened but could not read frame")
-                    self.camera.release()
-                    self.camera = None
-            except Exception as e:
-                logger.warning(f"OpenCV DSHOW camera failed: {e}")
+                logger.warning(f"open_camera failed: {e}")
                 if self.camera is not None:
                     try:
                         self.camera.release()
@@ -183,9 +211,21 @@ class RaspberryPiClient:
                     continue
             
             if not self.esp32_serial:
-                logger.warning("ESP32 not found, using mock sensor data")
+                logger.info("Local ESP32 serial not found; starting PIDistanceClient to poll Pi distance endpoint...")
+                try:
+                    from pi_distance_client import PIDistanceClient
+                    pi_host = getattr(config, 'PI_HOST', '10.117.98.217') if config else '10.117.98.217'
+                    self.distance_client = PIDistanceClient(host=pi_host).start()
+                except Exception as e:
+                    logger.warning(f"Could not start PIDistanceClient: {e}")
         except Exception as e:
-            logger.warning(f"ESP32 connection failed: {e}, using mock data")
+            logger.warning(f"ESP32 connection failed: {e}")
+            try:
+                from pi_distance_client import PIDistanceClient
+                pi_host = getattr(config, 'PI_HOST', '10.117.98.217') if config else '10.117.98.217'
+                self.distance_client = PIDistanceClient(host=pi_host).start()
+            except Exception:
+                pass
         
         # Start persistent audio worker thread
         self.audio_worker_thread = Thread(target=self._audio_worker, daemon=True)
@@ -233,11 +273,17 @@ class RaspberryPiClient:
                     pass
     
     def read_esp32_sensors(self):
-        """Read sensor data from ESP32 via serial"""
+        """Read sensor data from ESP32 via PIDistanceClient or local serial"""
+        if getattr(self, 'distance_client', None) is not None:
+            val = self.distance_client.get_distance()
+            self.ultrasonic_distance = val
+            if val is not None:
+                self.esp32_last_time = time.time()
+            return
+
         if not self.esp32_serial:
-            # Mock data for testing
-            import random
-            self.ultrasonic_distance = random.uniform(30, 200)
+            # No mock distances: send None when ESP32 is not found
+            self.ultrasonic_distance = None
             return
         
         try:
@@ -250,7 +296,10 @@ class RaspberryPiClient:
                     
                     # Parse distance
                     dist_str = parts[0].split(':')[1]
-                    self.ultrasonic_distance = float(dist_str)
+                    val = float(dist_str)
+                    if 2.0 <= val <= 400.0:
+                        self.ultrasonic_distance = val
+                        self.esp32_last_time = time.time()
                     
                     # Parse button
                     if len(parts) > 1:
@@ -261,12 +310,15 @@ class RaspberryPiClient:
     
     def speak(self, text):
         """Queue audio for playback (handled by the dedicated audio worker thread)"""
+        if not self._should_client_speak():
+            return
         if text:
             self.audio_queue.put(text)
     
     async def capture_and_stream(self, websocket):
         """Main loop: capture frames and stream to laptop"""
         logger.info("Starting video streaming...")
+        recv_task = asyncio.create_task(self._recv_loop(websocket))
         
         while self.running:
             try:
@@ -311,11 +363,19 @@ class RaspberryPiClient:
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 frame_base64 = base64.b64encode(buffer).decode('utf-8')
                 
+                # Check staleness: None when unavailable or older than 500 ms
+                now = time.time()
+                dist_val = self.ultrasonic_distance
+                if dist_val is not None:
+                    if (now - getattr(self, 'esp32_last_time', 0.0)) > 0.5:
+                        dist_val = None
+
                 # Prepare data packet
                 data = {
                     'frame': frame_base64,
-                    'timestamp': time.time(),
-                    'ultrasonic': self.ultrasonic_distance,
+                    'timestamp': now,
+                    'distance': dist_val,
+                    'ultrasonic': dist_val,
                     'button': self.button_pressed,
                     'frame_shape': frame.shape[:2]  # (height, width)
                 }
@@ -323,23 +383,13 @@ class RaspberryPiClient:
                 # Send to laptop
                 await websocket.send(json.dumps(data))
                 
-                # Wait for response from laptop
-                try:
-                    response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                    result = json.loads(response)
-                    
-                    # Process results
-                    self.process_results(result)
-                    
-                except asyncio.TimeoutError:
-                    logger.warning("No response from server within 5s")
-                
                 # Track FPS
                 self.frame_count += 1
                 if self.frame_count % 30 == 0:
                     elapsed = time.time() - self.start_time
                     fps = self.frame_count / elapsed
-                    logger.info(f"Streaming @ {fps:.1f} fps, Distance: {self.ultrasonic_distance:.1f}cm")
+                    dist_str = f"{self.ultrasonic_distance:.1f}cm" if self.ultrasonic_distance is not None else "None"
+                    logger.info(f"Streaming @ {fps:.1f} fps, Distance: {dist_str}")
                 
                 # Control frame rate (target 30fps)
                 await asyncio.sleep(0.001)
@@ -350,6 +400,30 @@ class RaspberryPiClient:
             except Exception as e:
                 logger.error(f"Streaming error: {e}")
                 await asyncio.sleep(0.1)
+        recv_task.cancel()
+        try:
+            await recv_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _recv_loop(self, websocket):
+        """Asynchronously receive and process ML results from laptop without blocking frame transmission."""
+        try:
+            async for response in websocket:
+                if not self.running:
+                    break
+                try:
+                    result = json.loads(response)
+                    self.process_results(result)
+                except Exception as e:
+                    logger.debug(f"Error processing response: {e}")
+        except (websockets.exceptions.ConnectionClosedOK,
+                websockets.exceptions.ConnectionClosedError,
+                websockets.exceptions.ConnectionClosed):
+            pass
+        except Exception as e:
+            logger.debug(f"Receiver loop exception: {e}")
+
     
     def process_results(self, result):
         """Process ML results from laptop"""
@@ -357,14 +431,20 @@ class RaspberryPiClient:
             # Get navigation instruction
             if 'navigation' in result and result['navigation']:
                 nav_text = result['navigation']
-                logger.info(f"Navigation: {nav_text}")
-                
-                # Speak instruction with cooldown to avoid queuing the same message every frame
                 now = time.time()
-                if nav_text != self.last_nav_announcement or (now - self.last_nav_announcement_time) > 2.0:
-                    self.speak(nav_text)
-                    self.last_nav_announcement = nav_text
-                    self.last_nav_announcement_time = now
+                
+                # Only log "Navigation: <msg>" when the message changes or 10 seconds have passed
+                if nav_text != self.last_nav_log or (now - self.last_nav_log_time) >= 10.0:
+                    logger.info(f"Navigation: {nav_text}")
+                    self.last_nav_log = nav_text
+                    self.last_nav_log_time = now
+                
+                # Only speak server guidance/messages through client audio engine when CLIENT_SPEAKS is True
+                if self._should_client_speak():
+                    if nav_text != self.last_nav_announcement or (now - self.last_nav_announcement_time) > 2.0:
+                        self.speak(nav_text)
+                        self.last_nav_announcement = nav_text
+                        self.last_nav_announcement_time = now
             
             # Log detections
             if 'objects' in result:
@@ -376,7 +456,14 @@ class RaspberryPiClient:
                 face_count = len(result['faces'])
                 if face_count > 0:
                     names = [f['name'] for f in result['faces']]
-                    logger.info(f"Recognized: {', '.join(names)}")
+                    names_str = ', '.join(names)
+                    now_face = time.time()
+                    if names_str != self.last_recognized_face_name or (now_face - self.last_recognized_face_log_time) >= 10.0:
+                        logger.info(f"Recognized: {names_str}")
+                        self.last_recognized_face_name = names_str
+                        self.last_recognized_face_log_time = now_face
+                else:
+                    self.last_recognized_face_name = None
             
             # Calculate latency
             if 'timestamp' in result:
@@ -390,6 +477,7 @@ class RaspberryPiClient:
         """Connect to laptop server and start streaming"""
         self.running = True
         
+        print(f"Connecting to laptop at: {self.server_ip} ({self.server_url})")
         logger.info(f"Connecting to laptop server: {self.server_url}")
         
         try:
@@ -418,6 +506,13 @@ class RaspberryPiClient:
             self.camera.release()
             logger.info("Camera released")
         
+        if getattr(self, 'distance_client', None) is not None:
+            try:
+                self.distance_client.stop()
+                logger.info("PIDistanceClient stopped")
+            except Exception:
+                pass
+
         if self.esp32_serial:
             self.esp32_serial.close()
             logger.info("ESP32 disconnected")
@@ -427,24 +522,45 @@ class RaspberryPiClient:
 
 def main():
     """Main entry point"""
-    import sys
-    
-    # Get laptop IP from command line or use default
-    if len(sys.argv) > 1:
-        laptop_ip = sys.argv[1]
-    else:
-        laptop_ip = "192.168.1.100"  # CHANGE THIS TO YOUR LAPTOP IP
-        print(f"\nUsage: python3 rpi_client.py <LAPTOP_IP>")
-        print(f"Using default IP: {laptop_ip}")
-        print(f"To find laptop IP: On laptop run 'ipconfig' (Windows) or 'ifconfig' (Linux/Mac)\n")
-    
+    import argparse
+
+    parser = argparse.ArgumentParser(description="VisionMate Raspberry Pi Client")
+    parser.add_argument("laptop_ip", nargs="?", default="127.0.0.1", help="Laptop IP address")
+    parser.add_argument("--source", default=None, help="Camera source (plain number for webcam index, or stream URL)")
+    parser.add_argument("--dry-run", action="store_true", help="Run startup checks, print 'DRY RUN OK' and exit without opening camera, mic, or network")
+    args = parser.parse_args()
+
+    laptop_ip = args.laptop_ip
+    cam_source = args.source
+    if cam_source is None:
+        cam_source = os.environ.get("VISIONMATE_CAMERA")
+
+    if cam_source is not None and cam_source.isdigit():
+        cam_source = int(cam_source)
+
+    if args.dry_run:
+        client = RaspberryPiClient(server_ip=laptop_ip, server_port=8081, camera_source=cam_source)
+        ok = client.initialize(dry_run=True)
+        client.cleanup()
+        if ok:
+            print("DRY RUN OK")
+            sys.exit(0)
+        else:
+            logger.error("Dry run initialization failed!")
+            sys.exit(1)
+
+    print(f"Connecting to laptop at: {laptop_ip}")
+    if cam_source is not None:
+        print(f"Using camera source: {cam_source}")
+    logger.info(f"Connecting to laptop at: {laptop_ip}")
+
     # Create and initialize client
-    client = RaspberryPiClient(server_ip=laptop_ip, server_port=8081)
-    
+    client = RaspberryPiClient(server_ip=laptop_ip, server_port=8081, camera_source=cam_source)
+
     if not client.initialize():
         logger.error("Initialization failed!")
         return
-    
+
     # Run client
     try:
         asyncio.run(client.connect_and_run())

@@ -18,6 +18,7 @@ Legal: http://ip-api.com/docs/legal -- non-commercial use only on free tier.
 
 import logging
 import time
+import threading
 import requests
 from typing import Optional, Tuple
 
@@ -46,6 +47,8 @@ class IPGeolocationTracker:
         self._last_fetch_time: float = 0.0
         self._consecutive_failures: int = 0
         self._failure_start_time: float = 0.0
+        self.is_running: bool = False
+        self.geolocation_thread: Optional[threading.Thread] = None
         logger.info(
             "IPGeolocationTracker initialized "
             f"(cache={cache_seconds}s, endpoint={IP_API_URL})"
@@ -55,17 +58,60 @@ class IPGeolocationTracker:
     # Public API
     # ------------------------------------------------------------------
 
+    def start(self):
+        """
+        Start background geolocation updates in a daemon thread.
+        Does not start at all when GPS_MOCK_MODE or INDOOR_MODE is True.
+        """
+        try:
+            import config
+            mock_mode = getattr(config, 'GPS_MOCK_MODE', False)
+            indoor_mode = getattr(config, 'INDOOR_MODE', False)
+        except Exception:
+            mock_mode = False
+            indoor_mode = False
+
+        if mock_mode or indoor_mode:
+            logger.info("IPGeolocationTracker: not started because GPS_MOCK_MODE or INDOOR_MODE is True")
+            return
+
+        if self.is_running:
+            return
+
+        self.is_running = True
+        self.geolocation_thread = threading.Thread(
+            target=self._run_loop,
+            name="IPGeolocationThread",
+            daemon=True
+        )
+        self.geolocation_thread.start()
+        logger.info("IPGeolocationTracker background thread started (daemon=True)")
+
+    def stop(self):
+        """Stop background geolocation updates."""
+        self.is_running = False
+        self.geolocation_thread = None
+
+    def _run_loop(self):
+        """Background update loop running in daemon thread."""
+        while self.is_running:
+            try:
+                self.get_position()
+            except Exception as e:
+                logger.error(f"Error in IPGeolocationThread: {e}")
+            sleep_chunks = max(1, int(self._cache_seconds))
+            for _ in range(sleep_chunks):
+                if not self.is_running:
+                    break
+                time.sleep(1.0)
+
     def get_position(self) -> Optional[Tuple[float, float]]:
         """
         Return (latitude, longitude) from ip-api.com.
 
         Returns a cached value if still within cache_seconds; otherwise
-        re-fetches with retry + exponential backoff.  After MAX_CONSECUTIVE_FAILURES
-        consecutive network errors the tracker enters a cooldown period
-        (FAILURE_COOLDOWN_SECONDS) before trying again, preventing request storms
-        on a bad network connection.
-
-        Returns None on network error or API failure.
+        fetches position. If the fetch fails (e.g. no internet), enters the
+        600s cooldown immediately without a retry loop.
         """
         if self._is_cache_fresh():
             return self._cached_position
@@ -119,26 +165,22 @@ class IPGeolocationTracker:
         return True
 
     def _fetch_with_retry(self) -> Optional[Tuple[float, float]]:
-        """Try _fetch_position up to _MAX_RETRIES+1 times with exponential backoff."""
-        for attempt in range(self._MAX_RETRIES + 1):
-            result = self._fetch_position()
-            if result is not None:
-                return result
-            if attempt < self._MAX_RETRIES:
-                delay = self._RETRY_BASE_DELAY * (2 ** attempt)
-                logger.warning(
-                    f"IPGeolocationTracker: attempt {attempt + 1} failed, "
-                    f"retrying in {delay:.0f}s ..."
-                )
-                time.sleep(delay)
-        # All attempts exhausted
-        self._consecutive_failures += 1
-        if self._consecutive_failures == self._MAX_CONSECUTIVE_FAILURES:
-            self._failure_start_time = time.time()
-            logger.error(
-                f"IPGeolocationTracker: {self._consecutive_failures} consecutive "
-                f"failures -- entering {self._FAILURE_COOLDOWN_SECONDS}s cooldown"
-            )
+        """
+        Query _fetch_position once.
+        When the first attempt fails because of no internet / error,
+        enter the 600 s cooldown immediately without a retry loop.
+        """
+        result = self._fetch_position()
+        if result is not None:
+            return result
+
+        # First attempt failed -- enter 600s cooldown immediately (no retry loop)
+        self._consecutive_failures = self._MAX_CONSECUTIVE_FAILURES
+        self._failure_start_time = time.time()
+        logger.error(
+            f"IPGeolocationTracker: Fetch failed (no internet) -- "
+            f"entering {self._FAILURE_COOLDOWN_SECONDS}s cooldown immediately (no retry loop)"
+        )
         return None
 
     def _fetch_position(self) -> Optional[Tuple[float, float]]:
@@ -199,12 +241,22 @@ class IPGeolocationTracker:
 
 # Module-level cache: maps (rounded_lat, rounded_lon) -> (timestamp, place_name)
 _reverse_geocode_cache: dict = {}
+_reverse_geocode_lock = threading.Lock()
+_last_reverse_geocode_time: float = 0.0
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
-NOMINATIM_HEADERS = {"User-Agent": "VisionMate-HAL102/1.0"}
+NOMINATIM_HEADERS = {"User-Agent": "VisionMate/1.0"}
 
 
-def reverse_geocode(lat: float, lon: float, cache_seconds: float = 120.0) -> "Optional[str]":
+def clear_reverse_geocode_cache() -> None:
+    """Clear the reverse geocode cache (useful for testing)."""
+    global _last_reverse_geocode_time
+    with _reverse_geocode_lock:
+        _reverse_geocode_cache.clear()
+        _last_reverse_geocode_time = 0.0
+
+
+def reverse_geocode(lat: float, lon: float, cache_seconds: float = 300.0) -> "Optional[str]":
     """
     Convert GPS coordinates to a human-readable place name using
     OpenStreetMap Nominatim (free, no API key required).
@@ -212,66 +264,120 @@ def reverse_geocode(lat: float, lon: float, cache_seconds: float = 120.0) -> "Op
     Args:
         lat: Latitude
         lon: Longitude
-        cache_seconds: How long (seconds) to reuse a cached result for the
-                       same rounded coordinate (default 120 s = 2 min).
+        cache_seconds: Cache duration in seconds (default 300 s = 5 minutes).
 
     Returns:
-        Short place description string (e.g. "MG Road, Bangalore") or None
-        on any network / parse failure. Callers should treat None as
-        "(unknown location)" -- no exception is ever raised.
-
-    IMPORTANT -- Nominatim usage policy:
-        Max 1 request/second. This function caches aggressively (keyed by
-        coordinates rounded to 4 decimal places, ~11 m precision) and is
-        only called when a new sighting is recorded (which already has its own
-        cooldown via OBJECT_MATCH_COOLDOWN), so real-world call rate is far
-        below the 1 req/s limit.
+        Short place description: road + suburb/neighbourhood + city (e.g. "Brigade Road, Ashok Nagar, Bengaluru")
+        or None on failure. Callers can fall back to IP city or 'your current location'.
     """
+    global _last_reverse_geocode_time
     if lat is None or lon is None:
         return None
 
-    # Round to ~4 decimal places (~11 m precision) for cache key
-    rounded_lat = round(lat, 4)
-    rounded_lon = round(lon, 4)
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (ValueError, TypeError):
+        return None
+
+    # Cache by lat/lon rounded to 4 decimals (~11m precision) for 5 minutes
+    rounded_lat = round(lat_f, 4)
+    rounded_lon = round(lon_f, 4)
     cache_key = (rounded_lat, rounded_lon)
 
     now = time.time()
-    if cache_key in _reverse_geocode_cache:
-        cached_time, cached_name = _reverse_geocode_cache[cache_key]
-        if (now - cached_time) < cache_seconds:
-            return cached_name
+    with _reverse_geocode_lock:
+        if cache_key in _reverse_geocode_cache:
+            cached_time, cached_name = _reverse_geocode_cache[cache_key]
+            if (now - cached_time) < cache_seconds:
+                return cached_name
+
+        # Enforce max 1 request per second
+        time_since_last = now - _last_reverse_geocode_time
+        if time_since_last < 1.0:
+            time.sleep(1.0 - time_since_last)
+        _last_reverse_geocode_time = time.time()
 
     try:
         resp = requests.get(
             NOMINATIM_URL,
-            params={"format": "json", "lat": lat, "lon": lon, "zoom": 18},
+            params={"format": "jsonv2", "lat": lat_f, "lon": lon_f, "zoom": 18},
             headers=NOMINATIM_HEADERS,
-            timeout=5,
+            timeout=3,
         )
         resp.raise_for_status()
         data = resp.json()
 
         address = data.get("address", {})
         parts = []
-        for field in ("road", "suburb", "city_district", "city", "town", "village"):
-            val = address.get(field)
-            if val:
-                parts.append(val)
-                if len(parts) >= 2:
-                    break
+
+        # 1. Road
+        road = (
+            address.get("road")
+            or address.get("pedestrian")
+            or address.get("footway")
+            or address.get("path")
+            or address.get("street")
+        )
+        if road:
+            parts.append(road.strip())
+
+        # 2. Suburb or neighbourhood
+        suburb = (
+            address.get("suburb")
+            or address.get("neighbourhood")
+            or address.get("residential")
+            or address.get("subdistrict")
+            or address.get("quarter")
+        )
+        if suburb and suburb.strip() not in parts:
+            parts.append(suburb.strip())
+
+        # 3. City
+        city = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or address.get("city_district")
+        )
+        if city and city.strip() not in parts:
+            parts.append(city.strip())
 
         if parts:
             place = ", ".join(parts)
         else:
-            place = data.get("display_name", "").split(",")[0].strip() or None
+            display_name = data.get("display_name", "")
+            place = display_name.split(",")[0].strip() if display_name else None
 
-        _reverse_geocode_cache[cache_key] = (now, place)
-        logger.debug(f"Reverse geocode ({lat:.4f}, {lon:.4f}) -> {place!r}")
+        with _reverse_geocode_lock:
+            _reverse_geocode_cache[cache_key] = (time.time(), place)
+        logger.debug(f"Reverse geocode ({lat_f:.4f}, {lon_f:.4f}) -> {place!r}")
         return place
 
     except Exception as exc:
         logger.debug(f"reverse_geocode failed for ({lat}, {lon}): {exc}")
         return None
+
+
+def get_place_name(lat: Optional[float], lon: Optional[float], city_fallback: Optional[str] = None) -> str:
+    """
+    Get human-readable place name.
+    Falls back to IP-geolocation city if reverse_geocode fails, then 'your current location'.
+    Never returns raw numbers or coordinates.
+    """
+    if lat is not None and lon is not None:
+        try:
+            name = reverse_geocode(lat, lon)
+            if name:
+                return name
+        except Exception:
+            pass
+
+    if city_fallback and str(city_fallback).strip():
+        return str(city_fallback).strip()
+
+    return "your current location"
 
 
 # ---------------------------------------------------------------------------

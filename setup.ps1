@@ -62,8 +62,8 @@ Write-Host ""
 # Check webcam
 Write-Host "Checking webcam availability..." -ForegroundColor Yellow
 $webcamCheck = @"
-import cv2
-cap = cv2.VideoCapture(0)
+from camera_source import open_camera
+cap = open_camera()
 if cap.isOpened():
     print('WEBCAM_OK')
     cap.release()

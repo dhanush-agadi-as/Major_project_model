@@ -11,6 +11,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_signal_detector import TrafficSignalDetector
+from camera_source import open_camera
 
 
 def create_test_signal(color='red', size=(200, 200)):
@@ -86,7 +87,7 @@ def test_webcam_signals():
     print("Show red or green objects to the camera")
     print("Press 'q' to quit, 'm' to see color masks")
     
-    cap = cv2.VideoCapture(0)
+    cap = open_camera()
     if not cap.isOpened():
         print("[FAIL] Could not open webcam")
         return

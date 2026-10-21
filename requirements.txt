@@ -41,3 +41,4 @@ pytest-asyncio>=0.21.0
 SpeechRecognition>=3.10.0
 # NOTE: On Windows, if PyAudio wheel fails to build: pip install pipwin && pipwin install pyaudio
 PyAudio>=0.2.14
+cactus-needle>=3.2.0

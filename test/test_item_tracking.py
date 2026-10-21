@@ -14,6 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from item_tracker import ItemTracker
 from object_detector import ObjectDetector
 from database import VisionMateDB
+from camera_source import open_camera
 
 
 def test_iou_calculation():
@@ -126,7 +127,7 @@ def test_item_tracking_live():
     print("Place small objects on/near larger objects")
     print("Press 'q' to quit, 's' to query item location")
     
-    cap = cv2.VideoCapture(0)
+    cap = open_camera()
     if not cap.isOpened():
         print("[FAIL] Could not open webcam")
         db.close()

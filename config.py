@@ -9,6 +9,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Thread limits
+OPENVINO_THREADS = 8
+FACE_THREADS = 4
+os.environ.setdefault("OMP_NUM_THREADS", str(FACE_THREADS))
+os.environ.setdefault("ONNXRUNTIME_INTRA_OP_NUM_THREADS", str(FACE_THREADS))
+
+# Apply torch thread limits early before any models are imported or created
+try:
+    import torch
+    torch.set_num_threads(2)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+except Exception:
+    pass
+
+
 # Project Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_PATH = os.path.join(BASE_DIR, "data", "visionmate.db")
@@ -16,14 +34,38 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 TEST_DATA_DIR = os.path.join(BASE_DIR, "test", "test_data")
 
 # Camera Configuration
+USE_PI_CAMERA = True
+PI_HOST = os.environ.get("VISIONMATE_PI_HOST", "10.117.98.217")
+PI_STREAM_URL = f"http://{PI_HOST}:5000/video"
+SENSORS_URL = f"http://{PI_HOST}:5000/sensors"
+OBSTACLE_WARN_CM = 100
+OBSTACLE_STOP_CM = 40
+OBSTACLE_BEEPS = True
+
+_cam_env = os.environ.get("VISIONMATE_CAMERA")
+if _cam_env is not None:
+    _cam_env = _cam_env.strip()
+    if _cam_env.isdigit():
+        CAMERA_SOURCE = int(_cam_env)
+    else:
+        CAMERA_SOURCE = _cam_env
+else:
+    CAMERA_SOURCE = PI_STREAM_URL if USE_PI_CAMERA else 0
+
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
+
+ULTRASONIC_MOCK_MODE = not USE_PI_CAMERA
+
+# Pi camera (OV5647, ~53.5 degrees horizontal view) differs from the webcam.
+# estimate from OV5647 spec; re-calibrate with tools/calibrate_focal.py
+FOCAL_PX = 636.0
 
 # YOLOv8 Configuration
 YOLO_MODEL = os.path.join(BASE_DIR, "yolov8n.pt")  # Nano model for speed
 YOLO_OPENVINO_MODEL = os.path.join(BASE_DIR, "yolov8n_openvino_model")  # Path to OpenVINO-exported model, used if USE_OPENVINO is True
 USE_OPENVINO = True  # Try Intel OpenVINO acceleration (uses idle iGPU/NPU) instead of plain PyTorch CPU inference
-OPENVINO_DEVICE = "GPU"  # Target OpenVINO device: 'GPU', 'NPU', 'CPU', or 'AUTO'
+OPENVINO_DEVICE = "CPU"  # Target OpenVINO device: 'GPU', 'NPU', 'CPU', or 'AUTO'
 YOLO_CONFIDENCE = 0.5
 YOLO_IOU_THRESHOLD = 0.45
 YOLO_IMGSZ = 320  # Lowered further from 416 for CPU speed - trade-off is slightly reduced accuracy on small/distant objects
@@ -37,6 +79,7 @@ FACE_MODEL = "buffalo_l"  # InsightFace model
 FACE_DET_SIZE = (320, 320)
 FACE_ENROLLMENT_FRAMES = 5  # Capture multiple frames across angles for robustness
 FACE_RECOGNITION_FRAME_INTERVAL = 14  # Increased further - noticeably slower to detect new faces appearing
+FACE_NAME_HINTS = ["Bharath", "Dhanush"]  # Editable name hints for voice enrollment disambiguation/correction
 
 # Item Tracking Configuration
 ITEM_TRACKING_TIMEOUT = 3.0  # seconds
@@ -45,12 +88,49 @@ IOU_THRESHOLD = 0.3  # Minimum IoU to consider "inside"
 # Object Memory Configuration (Remember Objects Feature)
 # Replaced single threshold with three-tier confidence zone
 OBJECT_MATCH_HIGH_CONFIDENCE = 0.75  # Auto-confirm match and update location
+SINGLE_OBJECT_MATCH_MIN = 0.35  # Treat match as high-confidence if exactly one remembered object exists for this class
 OBJECT_MATCH_AMBIGUOUS_LOW = 0.50  # Ask user to confirm
-OBJECT_ENROLLMENT_FRAMES = 10  # Increased from 5 - more frames averaged into the embedding should make it more robust to lighting/angle variation, which should raise genuine match confidence
+ENROLL_MAX_FRAMES = 8  # Maximum frames captured during enrollment
+ENROLL_AUGMENT_PER_FRAME = 2  # Augmentations generated per frame crop (e.g. +-15 deg rotation)
+OBJECT_ENROLLMENT_FRAMES = ENROLL_MAX_FRAMES  # Alias for backward compatibility
+OBJECT_ENROLLMENT_DURATION = 3.0  # Duration in seconds to capture multi-pose enrollment frames
+MATCH_EVERY_N_FRAMES = 3  # Compute object recognition embeddings only every 3rd frame per track outside find mode
 OBJECT_MATCH_COOLDOWN = 2.0  # seconds between announcing same object
 USE_DEEP_FEATURES = True  # Use deep learning embeddings (MobileNetV2) for much better recognition
 OBJECT_RECOGNITION_FRAME_INTERVAL = 3  # Only run remembered-object recognition every N frames (matches face recognition's existing cadence)
 OBJECT_CANDIDATES_CACHE_TTL = 5.0  # Seconds to cache remembered-object DB reads before re-querying the database
+
+# Find Guidance Beep Profile (distance-dependent beep timing, duration, and pitch)
+FIND_BEEP_PROFILE = {
+    "far": {
+        "min_dist": 200.0,
+        "duration_ms": 60,
+        "interval_s": 1.2,
+        "freq_hz": 800,
+    },
+    "mid": {
+        "min_dist": 100.0,
+        "duration_ms": 90,
+        "interval_s": 0.7,
+        "freq_hz": 1000,
+    },
+    "near": {
+        "min_dist": 60.0,
+        "duration_ms": 140,
+        "interval_s": 0.4,
+        "freq_hz": 1200,
+    },
+    "reach": {  # within arm's reach (< 60 cm)
+        "min_dist": 0.0,
+        "duration_ms": 220,
+        "interval_s": 0.25,
+        "freq_hz": 1400,
+    },
+    "arrival": {
+        "duration_ms": 600,
+        "freq_hz": 1400,
+    },
+}
 
 # Traffic Signal Configuration
 TRAFFIC_HSV_RED_LOWER = [0, 120, 70]
@@ -61,11 +141,20 @@ TRAFFIC_MIN_AREA = 100  # Minimum pixel area for signal detection
 
 # Audio Feedback Priority (1 = highest)
 PRIORITY_EMERGENCY = 1
-PRIORITY_SOCIAL = 2
-PRIORITY_NAVIGATIONAL = 3
-PRIORITY_STATUS = 4
+PRIORITY_PROMPT = 2
+PRIORITY_SOCIAL = 3
+PRIORITY_NAVIGATIONAL = 4
+PRIORITY_STATUS = 5
+
+STARTUP_READ_COMMANDS = True
+
+# Audio Output Target
+CLIENT_SPEAKS = False  # set True on the real Raspberry Pi where the speaker is on the glasses; False when client and server run on the same laptop
+
 
 # Server Configuration
+SERVER_HOST = "0.0.0.0"
+SERVER_PORT = 8081
 FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 5000
 FLASK_DEBUG = False
@@ -96,7 +185,7 @@ INDOOR_MODE = True  # When True, skip outdoor reverse-geocoding for sightings an
                     # GPS/reverse-geocoding behavior.
 
 # Ultrasonic Sensor Configuration
-ULTRASONIC_MOCK_MODE = True  # Set to False when ESP32 is connected
+ULTRASONIC_MOCK_MODE = not USE_PI_CAMERA  # Real ultrasonic via Pi/ESP32 when USE_PI_CAMERA is True
 ULTRASONIC_PORT = "COM3"  # Serial port for ESP32 (Windows: COM3, Linux: /dev/ttyUSB1)
 ULTRASONIC_BAUDRATE = 115200
 ULTRASONIC_MAX_DISTANCE = 400  # cm - maximum reliable distance
@@ -105,3 +194,43 @@ ULTRASONIC_OBSTACLE_THRESHOLD = 100  # cm - warn if obstacle closer than this
 # Performance
 TARGET_FPS = 30
 MAX_FRAME_QUEUE = 10
+
+# Voice & Interface Configuration
+KEYBOARD_FALLBACK = False  # Set True for minimal debug hotkeys. Default is fully voice-only.
+AUTO_READ_NOTES = True     # Automatically read back newly saved voice notes.
+REQUIRE_SHUTDOWN_CONFIRM = False  # Set True to keep old yes/no confirmation flow before shutdown
+WAKE_WORDS = [
+    "hey vision",
+    "vision",
+    "a vision",
+    "have a vision",
+    "have vision",
+    "ek vision",
+    "eh vision",
+    "hey visions",
+    "a visions",
+    "he vision",
+    "hay vision",
+    "hi vision",
+    "revision",
+    "revisions",
+    "division",
+    "divisions",
+    "hey december",
+    "hey decision",
+    "a decision",
+    "decision",
+    "virginia",
+    "hey virginia",
+    "bharath",
+]
+WAKE_WORD_TIMEOUT = 6.0    # Seconds to wait for command after wake word
+YES_NO_TIMEOUT = 6.0       # Seconds to wait for yes/no confirmation window
+
+# Speech-to-Text Engine: "whistle" (offline Cactus Whistle), "google" (online Google STT), "auto" (Whistle first, fallback to Google if empty and online), "hybrid" (Google first when online, fallback to Whistle on error or offline)
+STT_ENGINE = "hybrid"
+
+# Debug flag to log ThreadPoolExecutor creation stack once at startup
+
+
+

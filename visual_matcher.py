@@ -20,6 +20,92 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _rotate_image(img: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate image around its center with replicate border."""
+    h, w = img.shape[:2]
+    center = (w / 2.0, h / 2.0)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+
+
+def _scale_image(img: np.ndarray, scale: float) -> np.ndarray:
+    """Scale image: zoom in (center crop) if scale > 1, shrink and pad if scale < 1."""
+    h, w = img.shape[:2]
+    if scale == 1.0 or h <= 2 or w <= 2:
+        return img
+    if scale > 1.0:
+        new_w = max(1, int(w / scale))
+        new_h = max(1, int(h / scale))
+        x1 = (w - new_w) // 2
+        y1 = (h - new_h) // 2
+        cropped = img[y1:y1 + new_h, x1:x1 + new_w]
+        return cv2.resize(cropped, (w, h))
+    else:
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        shrunk = cv2.resize(img, (new_w, new_h))
+        pad_top = (h - new_h) // 2
+        pad_bottom = h - new_h - pad_top
+        pad_left = (w - new_w) // 2
+        pad_right = w - new_w - pad_left
+        return cv2.copyMakeBorder(shrunk, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_REPLICATE)
+
+
+def _adjust_brightness(img: np.ndarray, factor: float) -> np.ndarray:
+    """Adjust brightness by factor with uint8 clipping."""
+    return np.clip(img.astype(np.float32) * factor, 0, 255).astype(np.uint8)
+
+
+def _generate_crop_augmentations(crop: np.ndarray, max_aug: int = None) -> List[np.ndarray]:
+    """
+    Generate augmented copies for an object crop:
+    - Base crop
+    - Rotations, scales, brightness, and horizontal flip variations
+    """
+    if crop.size == 0:
+        return []
+    if max_aug is None:
+        try:
+            import config
+            max_aug = getattr(config, 'ENROLL_AUGMENT_PER_FRAME', 2)
+        except Exception:
+            max_aug = 2
+            
+    variations = [crop]
+    angles = [-15.0, 15.0, -30.0, 30.0, -10.0, 10.0, -20.0, 20.0, -5.0, 5.0, -25.0, 25.0]
+    scales = [0.85, 1.15, 0.90, 1.10, 0.95, 1.05]
+    brightnesses = [0.8, 1.2, 0.85, 1.15]
+    
+    # Add angles
+    for a in angles:
+        if len(variations) > max_aug:
+            break
+        variations.append(_rotate_image(crop, a))
+        
+    # Add scales
+    for s in scales:
+        if len(variations) > max_aug:
+            break
+        variations.append(_scale_image(crop, s))
+        
+    # Add brightnesses
+    for b in brightnesses:
+        if len(variations) > max_aug:
+            break
+        variations.append(_adjust_brightness(crop, b))
+
+    # Add flipped variation if still needed
+    if len(variations) <= max_aug:
+        flipped = cv2.flip(crop, 1)
+        variations.append(flipped)
+        for a in [-15.0, 15.0]:
+            if len(variations) > max_aug:
+                break
+            variations.append(_rotate_image(flipped, a))
+
+    return variations[:max_aug + 1]
+
+
 class VisualMatcher:
     """Extracts and matches visual features for object recognition"""
     
@@ -91,6 +177,7 @@ class VisualMatcher:
         # Use deep learning embeddings if enabled
         if self.use_deep_features and self.deep_extractor:
             embedding = self.deep_extractor.extract_embedding(image, bbox)
+            logger.info("Deep embedding: 1280D vector")
             return {
                 'deep_embedding': embedding.tolist(),
                 'embedding_size': len(embedding),
@@ -151,7 +238,9 @@ class VisualMatcher:
     def extract_multi_frame_features(self, images: List[np.ndarray], 
                                     bboxes: List[Tuple[int, int, int, int]]) -> Dict:
         """
-        Extract features from multiple frames and aggregate them
+        Extract features from multiple frames and aggregate them.
+        For deep features, adds augmented copies (rotations +-15, +-30 deg, scale 0.85-1.15, brightness +-20%)
+        and stores exactly 24 embeddings in 'deep_embeddings' as well as the normalized mean in 'deep_embedding'.
         
         Args:
             images: List of images
@@ -160,45 +249,114 @@ class VisualMatcher:
         Returns:
             Aggregated features dictionary
         """
-        all_features = []
-        
-        for img, bbox in zip(images, bboxes):
-            features = self.extract_features(img, bbox)
-            if self.use_deep_features:
-                # For deep features, check if embedding exists
-                if features.get('deep_embedding'):
-                    all_features.append(features)
-            else:
-                # For traditional features, check if descriptors exist
-                if features['descriptors'] is not None:
-                    all_features.append(features)
-        
-        if not all_features:
-            logger.warning("No valid features extracted from frames")
-            return {'keypoints': [], 'descriptors': None, 'color_hist': []}
-        
-        # Handle deep learning embeddings
-        if self.use_deep_features and all_features[0].get('feature_type') == 'deep':
-            # Average embeddings across frames
-            embeddings = [np.array(f['deep_embedding']) for f in all_features]
-            avg_embedding = np.mean(embeddings, axis=0)
-            
-            # Normalize
+        if self.use_deep_features:
+            all_embeddings = []
+            valid_crops = []
+            import config
+            for img, bbox in zip(images, bboxes):
+                if bbox is not None:
+                    x1, y1, x2, y2 = [int(v) for v in bbox]
+                    h, w = img.shape[:2]
+                    x1 = max(0, min(x1, w - 1))
+                    y1 = max(0, min(y1, h - 1))
+                    x2 = max(x1 + 1, min(x2, w))
+                    y2 = max(y1 + 1, min(y2, h))
+                    crop = img[y1:y2, x1:x2]
+                else:
+                    crop = img
+
+                if crop.size == 0:
+                    continue
+                valid_crops.append(crop)
+
+            all_crops = []
+            if valid_crops:
+                if self.deep_extractor:
+                    # Generate augmentations so total crops = 24
+                    m = len(valid_crops)
+                    augs_per_crop = max(2, (24 + m - 1) // m)
+                    for c in valid_crops:
+                        all_crops.extend(_generate_crop_augmentations(c, max_aug=augs_per_crop))
+
+                    if len(all_crops) > 24:
+                        all_crops = all_crops[:24]
+                    elif len(all_crops) < 24:
+                        orig_len = len(all_crops)
+                        idx = 0
+                        while len(all_crops) < 24:
+                            all_crops.append(all_crops[idx % orig_len].copy())
+                            idx += 1
+                else:
+                    for img, bbox in zip(images, bboxes):
+                        feat = self.extract_features(img, bbox)
+                        if feat.get('deep_embedding'):
+                            emb = np.array(feat['deep_embedding'])
+                            norm = np.linalg.norm(emb)
+                            if norm > 0:
+                                emb = emb / norm
+                            all_embeddings.append(emb)
+
+            if self.deep_extractor and all_crops:
+                if hasattr(self.deep_extractor, 'extract_embeddings_batch'):
+                    batch_embs = self.deep_extractor.extract_embeddings_batch(all_crops)
+                    for emb in batch_embs:
+                        norm = np.linalg.norm(emb)
+                        if norm > 0:
+                            emb = emb / norm
+                        all_embeddings.append(emb)
+                else:
+                    for c in all_crops:
+                        try:
+                            emb = self.deep_extractor.extract_embedding(c, bbox=None)
+                            norm = np.linalg.norm(emb)
+                            if norm > 0:
+                                emb = emb / norm
+                            all_embeddings.append(emb)
+                        except Exception as e:
+                            logger.debug(f"Error extracting embedding: {e}")
+
+            if all_embeddings and len(all_embeddings) != 24:
+                if len(all_embeddings) > 24:
+                    all_embeddings = all_embeddings[:24]
+                else:
+                    orig_n = len(all_embeddings)
+                    i = 0
+                    while len(all_embeddings) < 24:
+                        all_embeddings.append(all_embeddings[i % orig_n].copy())
+                        i += 1
+
+            if not all_embeddings:
+                logger.warning("No valid deep features extracted from frames")
+                return {'deep_embedding': None, 'deep_embeddings': [], 'feature_type': 'deep'}
+
+            avg_embedding = np.mean(all_embeddings, axis=0)
             norm = np.linalg.norm(avg_embedding)
             if norm > 0:
                 avg_embedding = avg_embedding / norm
-            
-            logger.info(f"Aggregated deep embeddings from {len(all_features)} frames: "
-                       f"{len(avg_embedding)}D vector")
-            
+
+            logger.info("Deep embedding: 1280D vector")
+            logger.info(f"Aggregated {len(all_embeddings)} deep embeddings from {len(images)} frames (each enrollment stores 24 vectors of 1280D)")
+
             return {
                 'deep_embedding': avg_embedding.tolist(),
+                'deep_embeddings': [e.tolist() for e in all_embeddings],
                 'embedding_size': len(avg_embedding),
                 'feature_type': 'deep',
-                'num_frames': len(all_features)
+                'num_frames': len(images),
+                'num_embeddings': len(all_embeddings)
             }
-        
+
         # Traditional feature aggregation (ORB/SIFT/AKAZE)
+        all_features = []
+        for img, bbox in zip(images, bboxes):
+            features = self.extract_features(img, bbox)
+            if features.get('descriptors') is not None:
+                all_features.append(features)
+
+        if not all_features:
+            logger.warning("No valid features extracted from frames")
+            return {'keypoints': [], 'descriptors': None, 'color_hist': []}
+
         aggregated = {
             'keypoints': [],
             'keypoint_sizes': [],
@@ -232,6 +390,53 @@ class VisualMatcher:
         
         return aggregated
     
+    def match_vectorized(self, query_emb: np.ndarray, matrix: np.ndarray, row_labels: List[str]) -> Tuple[Optional[str], float]:
+        """
+        Match query embedding against a matrix of stored embeddings in a single vectorized cosine dot product.
+        Matching = one vectorized matrix product (cosine), top-3 mean per object.
+        
+        Args:
+            query_emb: 1D query embedding (or 2D 1xD)
+            matrix: 2D numpy array of shape (N, D), where each row is L2-normalized
+            row_labels: List of object names (length N) corresponding to rows in matrix
+            
+        Returns:
+            (best_name, best_score)
+        """
+        if matrix is None or matrix.size == 0 or not row_labels:
+            return None, 0.0
+        
+        q = np.array(query_emb, dtype=np.float32).flatten()
+        q_norm = np.linalg.norm(q)
+        if q_norm > 0:
+            q = q / q_norm
+        else:
+            return None, 0.0
+
+        # One vectorized matrix product!
+        sims = np.dot(matrix, q)
+        sims = np.clip(sims, 0.0, 1.0)
+        
+        # Group similarities by object name and calculate top-3 mean
+        label_scores = collections.defaultdict(list)
+        for idx, sim in enumerate(sims):
+            label_scores[row_labels[idx]].append(float(sim))
+        
+        best_name = None
+        best_score = -1.0
+        for name, scores in label_scores.items():
+            if len(scores) >= 3:
+                # Top-3 mean
+                top3 = sorted(scores, reverse=True)[:3]
+                mean_score = sum(top3) / 3.0
+            else:
+                mean_score = sum(scores) / float(len(scores))
+            if mean_score > best_score:
+                best_score = mean_score
+                best_name = name
+                
+        return best_name, max(0.0, float(best_score))
+
     def match_features(self, query_features: Dict, reference_features: Dict) -> Tuple[float, int]:
         """
         Match query features against reference features
@@ -245,13 +450,39 @@ class VisualMatcher:
         """
         # Handle deep learning embeddings
         if query_features.get('feature_type') == 'deep' and reference_features.get('feature_type') == 'deep':
+            if query_features.get('deep_embedding') is None:
+                return 0.0, 0
             query_emb = np.array(query_features['deep_embedding']).flatten()
-            ref_emb = np.array(reference_features['deep_embedding']).flatten()
-            
-            # Compute cosine similarity
-            similarity = np.dot(query_emb, ref_emb).item()  # .item() converts to Python scalar
-            similarity = float(np.clip(similarity, 0, 1))
-            
+            q_norm = np.linalg.norm(query_emb)
+            if q_norm > 0:
+                query_emb = query_emb / q_norm
+
+            stored_set = reference_features.get('deep_embeddings')
+            if stored_set and isinstance(stored_set, list) and len(stored_set) > 0:
+                similarities = []
+                for ref_e in stored_set:
+                    ref_arr = np.array(ref_e).flatten()
+                    r_norm = np.linalg.norm(ref_arr)
+                    if r_norm > 0:
+                        ref_arr = ref_arr / r_norm
+                    sim = float(np.dot(query_emb, ref_arr))
+                    sim = float(np.clip(sim, 0.0, 1.0))
+                    similarities.append(sim)
+
+                # Match = mean of top-3 cosine similarities against the stored set
+                similarities.sort(reverse=True)
+                top_k = similarities[:3]
+                similarity = float(np.mean(top_k)) if top_k else 0.0
+            elif reference_features.get('deep_embedding') is not None:
+                # Backward compatible: single mean embedding
+                ref_emb = np.array(reference_features['deep_embedding']).flatten()
+                r_norm = np.linalg.norm(ref_emb)
+                if r_norm > 0:
+                    ref_emb = ref_emb / r_norm
+                similarity = float(np.clip(np.dot(query_emb, ref_emb), 0.0, 1.0))
+            else:
+                return 0.0, 0
+
             logger.debug(f"Deep embedding similarity: {similarity:.3f}")
             return similarity, 1  # Return 1 as "match count" for consistency
         
@@ -340,7 +571,15 @@ class VisualMatcher:
         best_id = None
         best_name = None
         
-        for obj_id, custom_name, ref_features in candidates:
+        for item in candidates:
+            if len(item) == 3:
+                obj_id, custom_name, ref_features = item
+            elif len(item) >= 4:
+                obj_id = item[0]
+                custom_name = item[1]
+                ref_features = item[3]
+            else:
+                continue
             confidence, num_matches = self.match_features(query_features, ref_features)
             
             if confidence > best_confidence and confidence >= self.match_threshold:
@@ -355,7 +594,7 @@ class VisualMatcher:
             )
             history.append(best_confidence)
             smoothed_confidence = sum(history) / len(history)
-            logger.info(f"Best match: '{best_name}' with confidence {smoothed_confidence:.3f} (raw {best_confidence:.3f}, smoothed over {len(history)} frames)")
+            logger.debug(f"Best match: '{best_name}' with confidence {smoothed_confidence:.3f} (raw {best_confidence:.3f}, smoothed over {len(history)} frames)")
             return (best_id, best_name, smoothed_confidence)
         
         logger.debug(f"No matches above threshold {self.match_threshold}")

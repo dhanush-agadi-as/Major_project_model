@@ -21,9 +21,10 @@ db = VisionMateDB()
 detector = ObjectDetector()
 print("[OK] Ready!")
 
-# Test with webcam
-print("\nOpening webcam (press 'q' to quit)...")
-cap = cv2.VideoCapture(0)
+# Test with camera
+print("\nOpening camera (press 'q' to quit)...")
+from camera_source import open_camera
+cap = open_camera()
 
 if not cap.isOpened():
     print("[FAIL] No webcam found. Using static test instead.")

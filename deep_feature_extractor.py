@@ -14,6 +14,28 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class ScopedTorchThreads:
+    """Context manager for scoping torch threads to prevent CPU hogging during background extraction
+    without permanently altering the global thread count used by YOLO/NMS."""
+    def __init__(self, threads: int = 2):
+        self.threads = threads
+        self.prev_threads = None
+
+    def __enter__(self):
+        try:
+            self.prev_threads = torch.get_num_threads()
+            torch.set_num_threads(self.threads)
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if self.prev_threads is not None:
+                torch.set_num_threads(self.prev_threads)
+        except Exception:
+            pass
+
 
 class DeepFeatureExtractor:
     """Extract deep learning embeddings using pre-trained CNN"""
@@ -31,22 +53,22 @@ class DeepFeatureExtractor:
         # Load pre-trained model
         if model_name == 'mobilenet_v2':
             model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
-            # Remove classifier, keep feature extractor
-            self.model = nn.Sequential(*list(model.children())[:-1])
+            # Remove classifier, apply global average pooling
+            self.model = nn.Sequential(*list(model.children())[:-1], nn.AdaptiveAvgPool2d((1, 1)))
             self.embedding_size = 1280
         elif model_name == 'resnet18':
             model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
             # Remove final FC layer
-            self.model = nn.Sequential(*list(model.children())[:-1])
+            self.model = nn.Sequential(*list(model.children())[:-1], nn.AdaptiveAvgPool2d((1, 1)))
             self.embedding_size = 512
         elif model_name == 'efficientnet_b0':
             model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
-            self.model = nn.Sequential(*list(model.children())[:-1])
+            self.model = nn.Sequential(*list(model.children())[:-1], nn.AdaptiveAvgPool2d((1, 1)))
             self.embedding_size = 1280
         else:
             logger.warning(f"Unknown model {model_name}, using mobilenet_v2")
             model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
-            self.model = nn.Sequential(*list(model.children())[:-1])
+            self.model = nn.Sequential(*list(model.children())[:-1], nn.AdaptiveAvgPool2d((1, 1)))
             self.embedding_size = 1280
         
         self.model = self.model.to(self.device)
@@ -86,7 +108,7 @@ class DeepFeatureExtractor:
         
         if roi.size == 0:
             logger.warning("Empty ROI for embedding extraction")
-            return np.zeros(self.embedding_size)
+            return np.zeros(self.embedding_size, dtype=np.float32)
         
         # Convert BGR to RGB
         roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
@@ -96,22 +118,100 @@ class DeepFeatureExtractor:
             input_tensor = self.transform(roi_rgb).unsqueeze(0).to(self.device)
         except Exception as e:
             logger.error(f"Error preprocessing image: {e}")
-            return np.zeros(self.embedding_size)
+            return np.zeros(self.embedding_size, dtype=np.float32)
         
         # Extract features
         with torch.no_grad():
-            embedding = self.model(input_tensor)
+            with ScopedTorchThreads(2):
+                feat = self.model(input_tensor)
+                # Apply global average pooling (mean over H and W)
+                if feat.dim() == 4:
+                    feat = feat.mean(dim=[-2, -1])
+                elif feat.dim() == 3:
+                    feat = feat.mean(dim=[-2, -1])
         
         # Flatten and convert to numpy
-        embedding = embedding.squeeze().cpu().numpy()
+        embedding = feat.squeeze().cpu().numpy().astype(np.float32).flatten()
+        if embedding.size != self.embedding_size:
+            if embedding.size > self.embedding_size:
+                embedding = embedding[:self.embedding_size]
+            else:
+                embedding = np.pad(embedding, (0, self.embedding_size - embedding.size))
         
         # Normalize to unit vector (L2 normalization)
         norm = np.linalg.norm(embedding)
         if norm > 0:
             embedding = embedding / norm
+        else:
+            embedding = np.zeros(self.embedding_size, dtype=np.float32)
         
+        logger.info(f"Deep embedding: {len(embedding)}D vector")
         return embedding
     
+    def extract_embeddings_batch(self, crops: list) -> list:
+        """
+        Extract deep learning embeddings from a list of image crops in a single batched forward pass.
+        
+        Args:
+            crops: List of crop images (BGR numpy arrays)
+            
+        Returns:
+            List of 1D normalized numpy array embeddings
+        """
+        if not crops:
+            return []
+        
+        tensors = []
+        valid_indices = []
+        for idx, roi in enumerate(crops):
+            if roi is None or roi.size == 0:
+                continue
+            try:
+                roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+                t = self.transform(roi_rgb)
+                tensors.append(t)
+                valid_indices.append(idx)
+            except Exception as e:
+                logger.debug(f"Error transforming crop {idx}: {e}")
+        
+        results = [np.zeros(self.embedding_size, dtype=np.float32) for _ in range(len(crops))]
+        if not tensors:
+            return results
+        
+        try:
+            batch_tensor = torch.stack(tensors).to(self.device)
+            with torch.no_grad():
+                with ScopedTorchThreads(2):
+                    out = self.model(batch_tensor)
+                    # Apply global average pooling (mean over H and W)
+                    if out.dim() == 4:
+                        out = out.mean(dim=[-2, -1])
+                    elif out.dim() == 3:
+                        out = out.mean(dim=[-2, -1])
+            
+            # Handle shape: (B, C) -> (B, 1280)
+            embs = out.view(out.size(0), -1).cpu().numpy().astype(np.float32)
+            if embs.shape[1] != self.embedding_size:
+                if embs.shape[1] > self.embedding_size:
+                    embs = embs[:, :self.embedding_size]
+                else:
+                    embs = np.pad(embs, ((0, 0), (0, self.embedding_size - embs.shape[1])))
+            # L2 normalize each row
+            norms = np.linalg.norm(embs, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            embs = embs / norms
+            
+            for i, v_idx in enumerate(valid_indices):
+                results[v_idx] = embs[i]
+                logger.info(f"Deep embedding: {self.embedding_size}D vector")
+        except Exception as e:
+            logger.error(f"Error in batch embedding extraction: {e}")
+            # Fallback to single crop extraction
+            for v_idx in valid_indices:
+                results[v_idx] = self.extract_embedding(crops[v_idx])
+                
+        return results
+
     def compute_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
         """
         Compute cosine similarity between two embeddings

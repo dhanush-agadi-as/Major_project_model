@@ -9,9 +9,12 @@ import numpy as np
 import sys
 import os
 import time
+import pytest
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from camera_source import open_camera
 
 BASE_URL = "http://localhost:5000"
 
@@ -57,7 +60,7 @@ def test_process_frame_endpoint():
     print("=" * 60)
     
     # Create test frame
-    cap = cv2.VideoCapture(0)
+    cap = open_camera()
     if not cap.isOpened():
         print("\n[WARN] No webcam, using blank frame")
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -112,6 +115,7 @@ def test_process_frame_endpoint():
         return False
 
 
+@pytest.mark.skip(reason="manual/interactive test")
 def test_enroll_face_endpoint():
     """Test /enroll_face endpoint"""
     print("=" * 60)
@@ -119,7 +123,7 @@ def test_enroll_face_endpoint():
     print("=" * 60)
     
     print("\nOpening webcam to capture face...")
-    cap = cv2.VideoCapture(0)
+    cap = open_camera()
     
     if not cap.isOpened():
         print("[FAIL] Could not open webcam")
@@ -171,6 +175,7 @@ def test_enroll_face_endpoint():
         return False
 
 
+@pytest.mark.skip(reason="manual/interactive test")
 def test_query_item_endpoint():
     """Test /query_item endpoint"""
     print("=" * 60)

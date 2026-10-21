@@ -15,16 +15,16 @@ from object_detector import ObjectDetector
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--cls", default="cell phone")
-ap.add_argument("--camera", type=int, default=0)
+ap.add_argument("--camera", default=None)
 a = ap.parse_args()
 
+cam_src = a.camera if a.camera is not None else getattr(config, 'CAMERA_SOURCE', 0)
 size = fg.TYPICAL_SIZES_CM.get(a.cls.lower(), fg._DEFAULT_SIZE_CM)
 print(f"FOCAL_PX={fg.FOCAL_PX}  assumed size of '{a.cls}'={size} cm"
       + ("  (DEFAULT size - not in TYPICAL_SIZES_CM)" if a.cls.lower() not in fg.TYPICAL_SIZES_CM else ""))
 
-cap = cv2.VideoCapture(a.camera)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
+from camera_source import open_camera
+cap = open_camera(cam_src, width=config.CAMERA_WIDTH, height=config.CAMERA_HEIGHT)
 det = ObjectDetector()
 win, last_print = [], time.time()
 

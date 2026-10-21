@@ -74,12 +74,17 @@ class ObjectDetector:
         print(f"[OK] Object Detector initialized")
         print(f"  Target classes: {self.target_classes}")
     
-    def detect(self, frame: np.ndarray) -> List[Dict]:
+    def detect(self, frame: np.ndarray, imgsz: int = None, conf: float = None,
+               class_conf_overrides: Dict[str, float] = None) -> List[Dict]:
         """
         Perform object detection on a frame
         
         Args:
             frame: Input image (BGR format)
+            imgsz: Optional image size override (e.g. 480 during find session)
+            conf: Optional overall confidence threshold
+            class_conf_overrides: Optional per-class confidence threshold overrides
+                                  (e.g. {'cell phone': 0.15})
             
         Returns:
             List of detections, each containing:
@@ -88,13 +93,22 @@ class ObjectDetector:
                 - bbox: [x1, y1, x2, y2] bounding box
                 - center: (cx, cy) center point
         """
+        use_imgsz = imgsz if imgsz is not None else self.imgsz
+
+        if conf is not None:
+            model_conf = conf
+        elif class_conf_overrides:
+            model_conf = min([self.confidence] + list(class_conf_overrides.values()))
+        else:
+            model_conf = self.confidence
+
         # device= is honoured by both the plain PyTorch backend and the OpenVINO backend
         results = self.model(
             frame,
-            conf=self.confidence,
+            conf=model_conf,
             iou=self.iou_threshold,
             device=self.device,
-            imgsz=self.imgsz,
+            imgsz=use_imgsz,
             verbose=False
         )
         
@@ -112,19 +126,23 @@ class ObjectDetector:
                 # Map COCO names to our target names
                 class_name = self.coco_mapping.get(class_name, class_name)
                 
-                # Filter to only target classes
-                if class_name in self.target_classes:
-                    # Calculate center point
-                    cx = int((x1 + x2) / 2)
-                    cy = int((y1 + y2) / 2)
-                    
-                    detection = {
-                        'class_name': class_name,
-                        'confidence': confidence,
-                        'bbox': [int(x1), int(y1), int(x2), int(y2)],
-                        'center': (cx, cy)
-                    }
-                    detections.append(detection)
+                min_conf = (class_conf_overrides.get(class_name, self.confidence)
+                            if class_conf_overrides else self.confidence)
+                
+                # Filter to only target classes or overridden class
+                if confidence >= min_conf:
+                    if class_name in self.target_classes or (class_conf_overrides and class_name in class_conf_overrides):
+                        # Calculate center point
+                        cx = int((x1 + x2) / 2)
+                        cy = int((y1 + y2) / 2)
+                        
+                        detection = {
+                            'class_name': class_name,
+                            'confidence': confidence,
+                            'bbox': [int(x1), int(y1), int(x2), int(y2)],
+                            'center': (cx, cy)
+                        }
+                        detections.append(detection)
         
         return detections
     

@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from face_recognizer import FaceRecognizer
 from database import VisionMateDB
+from camera_source import open_camera
 
 
 def test_face_enrollment():
@@ -26,7 +27,7 @@ def test_face_enrollment():
     print("Position your face in frame and press SPACE to capture")
     print("Press 'q' to quit")
     
-    cap = cv2.VideoCapture(0)
+    cap = open_camera()
     if not cap.isOpened():
         print("[FAIL] Could not open webcam")
         return
@@ -115,7 +116,7 @@ def test_face_recognition():
     print("\nOpening webcam for recognition...")
     print("Press 'q' to quit")
     
-    cap = cv2.VideoCapture(0)
+    cap = open_camera()
     if not cap.isOpened():
         print("[FAIL] Could not open webcam")
         db.close()

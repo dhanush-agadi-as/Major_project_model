@@ -52,20 +52,26 @@ class GPSTracker:
         use_ip_geolocation: bool = GPS_USE_IP_GEOLOCATION,
         manual_override: bool = GPS_MANUAL_OVERRIDE_ENABLED,
     ):
+        import config
+        mock_effective = mock_mode or getattr(config, 'GPS_MOCK_MODE', False)
+        indoor_effective = getattr(config, 'INDOOR_MODE', False)
         self.mock_mode = mock_mode
-        self.use_ip_geolocation = use_ip_geolocation
         self.manual_override = manual_override
-        # BUGFIX: this was previously always left as None, so IP geolocation
-        # (Layer 3) silently never ran even when GPS_USE_IP_GEOLOCATION=True.
-        self.ip_tracker = (
-            IPGeolocationTracker(cache_seconds=IP_GEOLOCATION_CACHE_SECONDS)
-            if use_ip_geolocation else None
-        )
+        if mock_effective or indoor_effective:
+            self.use_ip_geolocation = False
+            self.ip_tracker = None
+        else:
+            self.use_ip_geolocation = use_ip_geolocation
+            self.ip_tracker = (
+                IPGeolocationTracker(cache_seconds=IP_GEOLOCATION_CACHE_SECONDS)
+                if use_ip_geolocation else None
+            )
         self.current_position = None
         self.last_update = None
         self.speed = 0.0  # m/s
         self.heading = 0.0  # degrees
         self.is_running = False
+        self.geolocation_thread = None
         # True only when a real serial GPS port was successfully opened.
         # Kept separate from mock_mode so that Wi-Fi/IP layers enabling
         # mock_mode=False never accidentally triggers the serial read thread.
@@ -87,7 +93,7 @@ class GPSTracker:
             )
 
         # Layers 4 & 5: mock path or real serial GPS (existing logic, unchanged)
-        if not use_ip_geolocation and not manual_override:
+        if not self.use_ip_geolocation and not manual_override:
             if mock_mode:
                 logger.info("GPS Tracker initialized in MOCK mode")
                 self.mock_path_index = 0
@@ -131,11 +137,27 @@ class GPSTracker:
         if self.use_serial:
             self.tracking_thread = threading.Thread(target=self._read_gps_loop, daemon=True)
             self.tracking_thread.start()
+
+        self.geolocation_thread = None
+        import config
+        mock_effective = self.mock_mode or getattr(config, 'GPS_MOCK_MODE', False)
+        indoor_effective = getattr(config, 'INDOOR_MODE', False)
+        if self.ip_tracker and not mock_effective and not indoor_effective:
+            if hasattr(self.ip_tracker, 'start'):
+                self.ip_tracker.start()
+                self.geolocation_thread = getattr(self.ip_tracker, 'geolocation_thread', None)
+            else:
+                self.geolocation_thread = threading.Thread(target=self.ip_tracker.get_position, daemon=True)
+                self.geolocation_thread.start()
+
         logger.info("GPS tracking started")
 
     def stop(self):
         """Stop GPS tracking"""
         self.is_running = False
+        if self.ip_tracker and hasattr(self.ip_tracker, 'stop'):
+            self.ip_tracker.stop()
+        self.geolocation_thread = None
         if self.use_serial and hasattr(self, 'serial_port'):
             self.serial_port.close()
         logger.info("GPS tracking stopped")
@@ -154,7 +176,13 @@ class GPSTracker:
             self._phone_position = (lat, lon)
             self._phone_position_time = time.time()
         acc_str = f", accuracy={accuracy:.0f}m" if accuracy is not None else ""
-        logger.info(f"Phone GPS report received: ({lat:.6f}, {lon:.6f}){acc_str}")
+        logger.debug(f"Phone GPS coordinates: ({lat:.6f}, {lon:.6f}){acc_str}")
+        try:
+            from ip_geolocation import get_place_name
+            place_str = get_place_name(lat, lon, city_fallback=self.get_city())
+        except Exception:
+            place_str = self.get_city() or "your current location"
+        logger.info(f"Phone GPS report received: near {place_str}{acc_str}")
 
     def _get_fresh_phone_position(self) -> Optional[Tuple[float, float]]:
         with self._phone_position_lock:
@@ -165,29 +193,32 @@ class GPSTracker:
                 return None
             return self._phone_position
 
+    def _log_source_once(self, source_name: str):
+        if getattr(self, '_last_logged_source', None) != source_name:
+            self._last_logged_source = source_name
+            logger.info(f"GPS position source used: {source_name}")
+
     def get_position(self) -> Optional[Tuple[float, float]]:
         """
         Get current GPS position using the highest-priority available source.
 
-        Priority: manual override > phone geolocation > IP geolocation > mock > serial GPS.
+        When GPS_MOCK_MODE is False: use phone GPS first and IP geolocation as fallback,
+        logging which source was used.
         Returns (latitude, longitude) or None if unavailable.
-
-        NOTE: The resolved position is always stored in self.current_position so
-        callers that read the attribute directly (e.g. server.py) see a real value
-        rather than None when only network-based layers are active.
         """
         # Layer 1: manual override -- instant, no network
         if self.manual_override:
             pos = (GPS_MANUAL_OVERRIDE_LAT, GPS_MANUAL_OVERRIDE_LON)
             self.current_position = pos
+            self._log_source_once("manual override")
             return pos
 
         # Layer 2: phone/browser geolocation -- most accurate free source
-        # when no dedicated GPS hardware is attached, as long as it's fresh
         phone_pos = self._get_fresh_phone_position()
         if phone_pos is not None:
             self.current_position = phone_pos
             self.last_update = time.time()
+            self._log_source_once("phone GPS (mobile_backend /locate)")
             return phone_pos
 
         # Layer 3: IP geolocation (ip-api.com)
@@ -196,13 +227,20 @@ class GPSTracker:
             if pos is not None:
                 self.current_position = pos
                 self.last_update = time.time()
+                self._log_source_once("IP geolocation")
                 return pos
 
-        # Layers 4 & 5: mock path or real serial GPS (original logic, unchanged)
+        # Layers 4 & 5: mock path or real serial GPS
         if self.mock_mode:
+            self._log_source_once("mock GPS")
             return self._get_mock_position()
         else:
-            return self.current_position
+            if self.current_position is not None:
+                self._log_source_once("serial GPS")
+                return self.current_position
+            # Fallback when mock_mode is False but no serial/phone/IP yet
+            self._log_source_once("fallback mock GPS")
+            return self._get_mock_position()
     
     def _get_mock_position(self) -> Tuple[float, float]:
         """Get simulated GPS position"""
@@ -222,6 +260,24 @@ class GPSTracker:
         if self.ip_tracker is not None:
             return self.ip_tracker.get_city()
         return None
+
+    def get_current_place_name(self) -> str:
+        """
+        Get current human-friendly place name (road + suburb/neighbourhood + city)
+        using reverse geocoding, falling back to IP city, or 'your current location'.
+        Never returns raw coordinates.
+        """
+        pos = self.get_position()
+        city = self.get_city()
+        if pos:
+            try:
+                from ip_geolocation import get_place_name
+                return get_place_name(pos[0], pos[1], city_fallback=city)
+            except Exception:
+                pass
+        if city:
+            return city
+        return "your current location"
     
     def advance_mock_position(self):
         """Move to next position in mock path (for testing)"""

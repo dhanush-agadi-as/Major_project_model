@@ -1,52 +1,132 @@
 """
-Measure FOCAL_PX for YOUR laptop webcam (pinhole model: f = pixels * distance / real_size).
+Distance Calibration Helper
+===========================
+Calculates FOCAL_PX for your webcam (pinhole model: FOCAL_PX = px * N / 15).
 
-Setup: put a known object (default: cell phone, longest side 15 cm - measure yours!)
-at a measured distance (default 50 cm, camera lens to object), long side parallel to the
-image plane, then run from the project root:
-
-    python tools/calibrate_focal.py --cls "cell phone" --size-cm 15 --dist-cm 50
-    (repeat at 80 cm for a sanity check - both should agree within ~5%)
-
-Paste the printed line into find_guidance.py (FOCAL_PX).
-Uses the same CAMERA_WIDTH/HEIGHT as the app so the value matches live behaviour.
+Usage:
+    python tools/calibrate_focal.py 50
+    python tools/calibrate_focal.py --distance 50
 """
-import argparse, os, sys, time, statistics
+import argparse
+import os
+import sys
+import time
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import cv2, config
+
+import cv2
+import config
 from object_detector import ObjectDetector
 
-ap = argparse.ArgumentParser()
-ap.add_argument("--cls", default="cell phone")
-ap.add_argument("--size-cm", type=float, default=15.0, help="true longest side of the object")
-ap.add_argument("--dist-cm", type=float, default=50.0, help="measured lens-to-object distance")
-ap.add_argument("--samples", type=int, default=40)
-ap.add_argument("--camera", type=int, default=0)
-a = ap.parse_args()
 
-cap = cv2.VideoCapture(a.camera)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
-det = ObjectDetector()
-vals, t0 = [], time.time()
-print(f"Hold the {a.cls} {a.dist_cm:.0f} cm from the lens. Collecting {a.samples} samples (q to abort)...")
-while len(vals) < a.samples and time.time() - t0 < 60:
-    ok, frame = cap.read()
-    if not ok:
-        continue
-    hits = [d for d in det.detect(frame) if d["class_name"] == a.cls]
-    if hits:
-        x1, y1, x2, y2 = max(hits, key=lambda d: d["confidence"])["bbox"]
-        px = max(x2 - x1, y2 - y1)
-        vals.append(px * a.dist_cm / a.size_cm)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    cv2.putText(frame, f"{len(vals)}/{a.samples}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    cv2.imshow("calibrate", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
-cap.release(); cv2.destroyAllWindows()
-if len(vals) < 10:
-    sys.exit(f"Only {len(vals)} detections - object not seen reliably. Improve lighting / bring it closer.")
-med = statistics.median(vals)
-print(f"\nsamples={len(vals)}  median={med:.1f}  stdev={statistics.pstdev(vals):.1f}")
-print(f"\n>>> FOCAL_PX: float = {med:.1f}\n")
+def main():
+    parser = argparse.ArgumentParser(description="Calibrate camera focal length using a cell phone (15 cm).")
+    parser.add_argument("dist_cm", nargs="?", type=float, default=None,
+                        help="Distance in cm to hold cell phone (e.g. 50)")
+    parser.add_argument("--distance", "-d", "--dist-cm", dest="opt_dist_cm", type=float, default=None,
+                        help="Distance in cm to hold cell phone (e.g. 50)")
+    parser.add_argument("--frames", type=int, default=30,
+                        help="Number of detection frames to average (default: 30)")
+    parser.add_argument("--camera", default=None,
+                        help="Camera device index or stream URL (default: config.CAMERA_SOURCE)")
+    args = parser.parse_args()
+
+    dist_cm = args.dist_cm if args.dist_cm is not None else (args.opt_dist_cm if args.opt_dist_cm is not None else 50.0)
+    target_frames = args.frames
+
+    cam_src = args.camera if args.camera is not None else getattr(config, 'CAMERA_SOURCE', 0)
+
+    print("\n" + "=" * 60)
+    print("DISTANCE CALIBRATION HELPER")
+    print("=" * 60)
+    print(f"Camera source: {cam_src}")
+    print(f"Please hold your cell phone exactly {dist_cm:.0f} cm away from the camera lens.")
+    print("Hold it upright, facing the camera directly, until 30 frames are captured.")
+    print("Press 'q' at any time to exit.\n")
+
+    frame_w = getattr(config, 'CAMERA_WIDTH', getattr(config, 'FRAME_WIDTH', 640))
+    frame_h = getattr(config, 'CAMERA_HEIGHT', getattr(config, 'FRAME_HEIGHT', 480))
+
+    from camera_source import open_camera
+    cap = open_camera(cam_src, width=frame_w, height=frame_h)
+
+    if not cap.isOpened():
+        sys.exit(f"Error: Unable to open camera source: {cam_src}.")
+
+    det = ObjectDetector()
+    px_samples = []
+    start_time = time.time()
+
+    actual_w = 640
+    actual_h = 480
+
+    try:
+        while len(px_samples) < target_frames:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+
+            actual_h, actual_w = frame.shape[:2]
+
+            # Detect cell phone
+            hits = [d for d in det.detect(frame) if d.get("class_name") in ("cell phone", "phone")]
+            if hits:
+                best = max(hits, key=lambda d: d.get("confidence", 0.0))
+                x1, y1, x2, y2 = best["bbox"]
+                px = float(max(x2 - x1, y2 - y1))
+                px_samples.append(px)
+
+                # Visual feedback on frame
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                cv2.putText(
+                    frame,
+                    f"Cell phone: {px:.1f}px ({len(px_samples)}/{target_frames})",
+                    (int(x1), max(20, int(y1) - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                )
+
+            status_text = f"Frames: {len(px_samples)}/{target_frames} at {dist_cm:.0f} cm ({actual_w}x{actual_h})"
+            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.imshow("Calibrate Focal Length", frame)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                print("\nCalibration aborted by user.")
+                break
+
+            # Timeout after 90 seconds
+            if time.time() - start_time > 90.0:
+                print("\nCalibration timed out (no stable detections within 90 seconds).")
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+    if len(px_samples) < 5:
+        sys.exit(f"\nCollected only {len(px_samples)} frames. Please ensure lighting is good and cell phone is clearly visible.")
+
+    avg_px = sum(px_samples) / len(px_samples)
+    focal_px = avg_px * dist_cm / 15.0
+    focal_640 = focal_px * (640.0 / actual_w) if actual_w > 0 else focal_px
+
+    print("\n" + "=" * 60)
+    print("CALIBRATION RESULTS")
+    print("=" * 60)
+    print(f"Captured frames: {len(px_samples)}")
+    print(f"Frame resolution: {actual_w}x{actual_h}")
+    print(f"Target distance (N): {dist_cm:.1f} cm")
+    print(f"Average bbox longest side (px): {avg_px:.2f} pixels")
+    print("\nFormula:")
+    print("  FOCAL_PX = px * N / 15")
+    print(f"  FOCAL_PX (for {actual_w}px width) = {avg_px:.2f} * {dist_cm:.1f} / 15 = {focal_px:.1f}")
+    if actual_w != 640:
+        print(f"  FOCAL_PX normalized for 640px base: {focal_640:.1f}")
+    print("\nYou can paste this into config.py:")
+    print(f"FOCAL_PX = {focal_640:.1f}")
+    print("=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    main()

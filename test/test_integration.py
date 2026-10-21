@@ -30,8 +30,10 @@ from obstacle_fusion import ObstacleFusion
 from navigation_engine import NavigationEngine
 import config
 from config import OBJECT_RECOGNITION_FRAME_INTERVAL, FACE_RECOGNITION_FRAME_INTERVAL, YOLO_FRAME_SKIP
+import pytest
 
 
+@pytest.mark.skip(reason="manual/interactive test")
 def test_full_pipeline_webcam():
     """Test complete AI pipeline with webcam"""
     print("=" * 60)

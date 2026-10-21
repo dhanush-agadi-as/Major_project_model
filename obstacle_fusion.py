@@ -6,9 +6,20 @@ Provides precise obstacle warnings with real distance measurements
 
 import logging
 from typing import Dict, List, Optional
-import math
+
+import os
+import sys
+
+# Ensure config can be imported
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import config
+except ImportError:
+    config = None
 
 logger = logging.getLogger(__name__)
+
+_SENTINEL = object()
 
 
 class ObstacleFusion:
@@ -27,34 +38,51 @@ class ObstacleFusion:
         logger.info("Obstacle Fusion initialized")
         logger.info(f"  Frame size: {frame_width}x{frame_height}")
         logger.info(f"  Ultrasonic FOV: {self.sensor_fov} deg")
+
+    def set_frame_size(self, width: int, height: int):
+        """Update frame dimensions dynamically from real camera stream."""
+        self.frame_width = width
+        self.frame_height = height
     
-    def get_object_with_distance(self, objects: List[Dict]) -> List[Dict]:
+    def get_object_with_distance(self, objects: List[Dict],
+                                 ultrasonic_distance: Optional[float] = _SENTINEL) -> List[Dict]:
         """
         Enhance object detections with precise distance from ultrasonic sensor
         
         Args:
             objects: List of detected objects with bboxes from YOLO
+            ultrasonic_distance: Optional distance in cm, or None if unavailable.
+                                 If omitted, reads from self.ultrasonic_sensor.
             
         Returns:
             List of objects with added 'precise_distance' field
         """
-        ultrasonic_distance = self.ultrasonic_sensor.get_distance()
-        
+        is_mock = False
+        if self.ultrasonic_sensor is not None and getattr(self.ultrasonic_sensor, 'mock_mode', False):
+            is_mock = True
+        if config is not None and getattr(config, 'ULTRASONIC_MOCK_MODE', False):
+            is_mock = True
+
+        if ultrasonic_distance is _SENTINEL:
+            if is_mock or self.ultrasonic_sensor is None:
+                ultrasonic_distance = None
+            else:
+                ultrasonic_distance = self.ultrasonic_sensor.get_distance()
+        elif is_mock:
+            # Mock mode must never generate obstacle warnings; treat as no ultrasonic reading
+            ultrasonic_distance = None
+
         enhanced_objects = []
         
         for obj in objects:
             enhanced = obj.copy()
             
             # Check if object is in center of frame (where ultrasonic points)
-            if self._is_in_sensor_view(obj['bbox']):
-                if ultrasonic_distance:
-                    enhanced['precise_distance'] = ultrasonic_distance / 100.0  # cm to meters
-                    enhanced['distance_source'] = 'ultrasonic'
-                else:
-                    enhanced['precise_distance'] = self._estimate_from_bbox(obj['bbox'])
-                    enhanced['distance_source'] = 'camera_estimate'
+            if self._is_in_sensor_view(obj['bbox']) and ultrasonic_distance is not None:
+                enhanced['precise_distance'] = ultrasonic_distance / 100.0  # cm to meters
+                enhanced['distance_source'] = 'ultrasonic'
             else:
-                # Object not in ultrasonic FOV, use camera estimation
+                # Object not in ultrasonic FOV or ultrasonic unavailable/mock, use camera estimation
                 enhanced['precise_distance'] = self._estimate_from_bbox(obj['bbox'])
                 enhanced['distance_source'] = 'camera_estimate'
             
@@ -68,15 +96,13 @@ class ObstacleFusion:
         
         Sensor typically points straight ahead with narrow FOV (~15 degrees)
         """
-        x1, y1, x2, y2 = bbox
+        x1, _, x2, _ = bbox
         
-        # Get object center
+        # Get object horizontal center
         obj_center_x = (x1 + x2) / 2
-        obj_center_y = (y1 + y2) / 2
         
-        # Get frame center
+        # Get frame horizontal center
         frame_center_x = self.frame_width / 2
-        frame_center_y = self.frame_height / 2
         
         # Calculate angle offset from center
         pixel_offset_x = abs(obj_center_x - frame_center_x)
@@ -109,18 +135,20 @@ class ObstacleFusion:
         else:
             return 4.0  # Far
     
-    def get_critical_obstacles(self, objects: List[Dict], distance_threshold: float = 1.5) -> List[Dict]:
+    def get_critical_obstacles(self, objects: List[Dict], distance_threshold: float = 1.5,
+                               ultrasonic_distance: Optional[float] = _SENTINEL) -> List[Dict]:
         """
         Get obstacles that are critically close
         
         Args:
             objects: List of detected objects
             distance_threshold: Distance in meters to consider critical
+            ultrasonic_distance: Optional distance in cm, or None if unavailable
             
         Returns:
             List of critical obstacles sorted by distance
         """
-        enhanced = self.get_object_with_distance(objects)
+        enhanced = self.get_object_with_distance(objects, ultrasonic_distance=ultrasonic_distance)
         
         # Filter obstacles (not books, bottles, etc.)
         obstacle_classes = ['person', 'chair', 'couch', 'car', 'bicycle', 'motorcycle', 'bus', 'truck']
@@ -136,14 +164,19 @@ class ObstacleFusion:
         
         return critical
     
-    def generate_obstacle_warnings(self, objects: List[Dict]) -> List[Dict]:
+    def generate_obstacle_warnings(self, objects: List[Dict],
+                                   ultrasonic_distance: Optional[float] = _SENTINEL) -> List[Dict]:
         """
         Generate precise obstacle warnings with distances
         
+        Args:
+            objects: List of detected objects
+            ultrasonic_distance: Optional distance in cm, or None if unavailable
+            
         Returns:
             List of warning messages with priority
         """
-        critical = self.get_critical_obstacles(objects)
+        critical = self.get_critical_obstacles(objects, ultrasonic_distance=ultrasonic_distance)
         
         warnings = []
         

@@ -52,18 +52,16 @@ server_start_time = time.time()
 # ─── Webcam Helpers ──────────────────────────────────────
 
 def get_camera():
-    """Get or initialize the laptop webcam"""
+    """Get or initialize the camera"""
     global camera
     with camera_lock:
         if camera is None or not camera.isOpened():
-            camera = cv2.VideoCapture(0)
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            camera.set(cv2.CAP_PROP_FPS, 30)
+            from camera_source import open_camera
+            camera = open_camera(width=640, height=480, fps=30)
             if camera.isOpened():
-                print("[OK] Laptop webcam opened for video feed")
+                print("[OK] Camera opened for video feed")
             else:
-                print("[WARN] Could not open laptop webcam")
+                print("[WARN] Could not open camera")
     return camera
 
 
@@ -114,6 +112,7 @@ def _create_placeholder_frame(text):
 def get_location():
     """Return current GPS coordinates (highest-priority available source)"""
     pos = gps_tracker.get_position()
+    place_name = gps_tracker.get_current_place_name()
     if pos:
         if gps_tracker.manual_override:
             source = "manual"
@@ -126,6 +125,7 @@ def get_location():
         return jsonify({
             "latitude": pos[0],
             "longitude": pos[1],
+            "place_name": place_name,
             "source": source,
             "timestamp": time.time()
         })
@@ -133,6 +133,7 @@ def get_location():
     return jsonify({
         "latitude": 12.926516,
         "longitude": 77.526422,
+        "place_name": place_name,
         "source": "mock",
         "timestamp": time.time()
     })
@@ -287,12 +288,14 @@ def get_status():
     cam = get_camera()
     cam_ok = cam is not None and cam.isOpened()
     pos = gps_tracker.get_position()
+    place_name = gps_tracker.get_current_place_name()
 
     return jsonify({
         "status": "running",
         "uptime_seconds": int(uptime),
         "webcam_available": cam_ok,
         "gps_position": {"lat": pos[0], "lng": pos[1]} if pos else None,
+        "place_name": place_name,
         "gps_mock_mode": config.GPS_MOCK_MODE,
         "pending_notifications": len(notifications_queue),
     })

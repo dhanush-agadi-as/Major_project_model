@@ -56,7 +56,8 @@ class NavigationDemo:
         self.transit_guide = TransitGuide(self.gps)
         
         # Camera
-        self.cap = cv2.VideoCapture(0)
+        from camera_source import open_camera
+        self.cap = open_camera()
         
         # State
         self.navigating = False
