@@ -19,3 +19,5 @@ yolov8n_openvino_model/
 # OS artefacts
 .DS_Store
 Thumbs.db
+test.wav
+data/
