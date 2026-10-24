@@ -41,15 +41,17 @@ class PIDistanceClient:
     ):
         if host is None:
             if config is not None:
-                host = getattr(config, "PI_HOST", "10.117.98.217")
+                host = getattr(config, "PI_HOST", "raspberrypi.local")
             else:
-                host = "10.117.98.217"
+                host = "raspberrypi.local"
 
         if host.startswith("http://") or host.startswith("https://"):
             if "/distance" in host:
                 self.url = host
             else:
                 self.url = f"{host.rstrip('/')}/distance"
+        elif config is not None and getattr(config, "DISTANCE_URL", None) and host == getattr(config, "PI_HOST", None):
+            self.url = getattr(config, "DISTANCE_URL")
         else:
             self.url = f"http://{host}:{port}/distance"
 
@@ -186,15 +188,16 @@ class PIDistanceClient:
     def stop(self):
         """Stop polling thread and close HTTP session cleanly."""
         self._stop_event.set()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-            self._thread = None
+        # Close the session first so any in-flight HTTP request is aborted immediately.
         if self._session is not None:
             try:
                 self._session.close()
             except Exception:
                 pass
             self._session = None
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+            self._thread = None
         logger.info("PIDistanceClient stopped")
 
     def __enter__(self):

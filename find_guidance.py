@@ -202,9 +202,11 @@ class FindGuide:
         self.frame_h = frame_h
         self._is_speaking_fn = is_speaking_fn
         self._beeps_paused = False
+        self._is_paused = False
 
         self.is_active: bool = False
         self._lock = threading.Lock()
+
 
         # Target identity
         self._target_name: str = ""
@@ -262,10 +264,33 @@ class FindGuide:
         """Resume proximity beeping after TTS speech finishes."""
         self._beeps_paused = False
 
+    def pause(self) -> None:
+        """Pause find guidance session (e.g. during emergency check-in)."""
+        with self._lock:
+            self._is_paused = True
+            self.pause_beeps()
+        logger.info("FindGuide: session paused")
+
+    def resume(self) -> None:
+        """Resume find guidance session after pause."""
+        with self._lock:
+            self._is_paused = False
+            self.resume_beeps()
+            now = time.monotonic()
+            self._last_speech_time = now
+            self._last_detected_time = now
+        logger.info("FindGuide: session resumed")
+
+    @property
+    def is_paused(self) -> bool:
+        with self._lock:
+            return getattr(self, '_is_paused', False)
+
     def set_frame_size(self, width: int, height: int) -> None:
         """Update frame dimensions dynamically from real camera stream."""
         self.frame_w = width
         self.frame_h = height
+
 
     # ------------------------------------------------------------------
     # Public API
@@ -454,7 +479,7 @@ class FindGuide:
             Returns ``{}`` immediately if the session is not active.
         """
         with self._lock:
-            if not self.is_active or self._reached_then_removed_ended:
+            if not self.is_active or self._reached_then_removed_ended or self._is_paused:
                 return {}
 
         # ── 1. Search for target in remembered ────────────────────────────

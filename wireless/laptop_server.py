@@ -355,6 +355,7 @@ class FaceWorker:
         self._lock = threading.Lock()
         self._pending_frame = None
         self._pending_yolo_person = False
+        self._pending_person_boxes = None
         self._running = False
         self._thread = None
         self._event = threading.Event()
@@ -374,12 +375,14 @@ class FaceWorker:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.5)
 
-    def submit_frame(self, frame: np.ndarray, yolo_has_person: bool, is_find_active: bool = False):
+    def submit_frame(self, frame: np.ndarray, yolo_has_person: bool, is_find_active: bool = False,
+                     person_boxes: Optional[List[List[int]]] = None):
         if is_find_active or not self.face_recognizer:
             return
         with self._lock:
             self._pending_frame = frame.copy() if frame is not None else None
             self._pending_yolo_person = yolo_has_person
+            self._pending_person_boxes = [list(b) for b in person_boxes] if person_boxes else None
             self._event.set()
 
     def get_latest_results(self, yolo_has_person: bool) -> List[dict]:
@@ -400,6 +403,8 @@ class FaceWorker:
                 frame = self._pending_frame
                 self._pending_frame = None
                 yolo_person = self._pending_yolo_person
+                person_boxes = self._pending_person_boxes
+                self._pending_person_boxes = None
                 self._event.clear()
 
             if frame is None:
@@ -423,13 +428,18 @@ class FaceWorker:
                 if hasattr(self.face_recognizer, 'recognize_faces'):
                     try:
                         faces = self.face_recognizer.recognize_faces(
-                            frame, current_time=now, yolo_has_person=True
+                            frame, current_time=now, yolo_has_person=True, person_boxes=person_boxes
                         )
                     except TypeError:
                         try:
-                            faces = self.face_recognizer.recognize_faces(frame)
-                        except Exception:
-                            faces = []
+                            faces = self.face_recognizer.recognize_faces(
+                                frame, current_time=now, yolo_has_person=True
+                            )
+                        except TypeError:
+                            try:
+                                faces = self.face_recognizer.recognize_faces(frame)
+                            except Exception:
+                                faces = []
                 with self._lock:
                     self._cached_faces = faces
                     for f in faces:
@@ -615,6 +625,16 @@ class LaptopMLServer:
             # Configure OpenVINO runtime with remaining cores, hint LATENCY, explicit num_streams=1
             configure_openvino_runtime()
 
+            # Pi hub connectivity check — runs in a background daemon thread so it
+            # NEVER blocks startup.  Results are logged when the check completes.
+            if not dry_run:
+                _bg_check = threading.Thread(
+                    target=self._run_pi_startup_check,
+                    name="PiStartupCheck",
+                    daemon=True,
+                )
+                _bg_check.start()
+
             # Database
             self.db = VisionMateDB()
             logger.info("[OK] Database ready")
@@ -707,6 +727,8 @@ class LaptopMLServer:
             )
             if not dry_run:
                 self.obstacle_alerter.start()
+            sensor_status = "OK" if self.obstacle_alerter.get_distance() is not None else "NO DATA"
+            logger.info("Obstacle beeps: %s, sensor: %s", "ON" if self.obstacle_alerter.beeps_enabled else "OFF", sensor_status)
             logger.info("[OK] Obstacle Alerter ready")
 
             # Voice command system (voice-only interface)
@@ -739,9 +761,37 @@ class LaptopMLServer:
             else:
                 logger.info("[WARN] Voice command module not found - skipping")
 
+            # Emergency Manager (Fall detection monitoring and family app alerts)
+            try:
+                from emergency_manager import EmergencyManager
+                _motion_url = getattr(
+                    config, 'MOTION_URL',
+                    f"http://{getattr(config, 'PI_HOST', 'raspberrypi.local')}:5000/motion"
+                )
+                self.emergency_manager = EmergencyManager(
+                    pi_host=getattr(config, 'PI_HOST', '127.0.0.1'),
+                    motion_url=_motion_url,
+                    audio_feedback=self.audio,
+                    voice_system=self.voice_system,
+                    find_guide=self.find_guide,
+                    gps_tracker=self.gps_tracker,
+                    dry_run=dry_run or getattr(config, 'EMERGENCY_DRY_RUN', True),
+                    user_name=getattr(config, 'EMERGENCY_USER_NAME', 'Bharath')
+                )
+                if self.voice_system:
+                    self.voice_system.emergency_manager = self.emergency_manager
+                if not dry_run:
+                    self.emergency_manager.start_polling()
+                logger.info("[OK] Emergency Manager ready (motion_url=%s)", _motion_url)
+            except Exception as e:
+                logger.warning(f"[WARN] Emergency Manager initialization failed: {e}")
+                self.emergency_manager = None
+
+
             logger.info("\n" + "=" * 60)
             logger.info("[OK] ALL MODULES LOADED SUCCESSFULLY!")
             logger.info("=" * 60)
+
 
             # Print startup thread diagnosis line (torch, OpenVINO, STT)
             self.print_thread_diagnostics()
@@ -752,6 +802,160 @@ class LaptopMLServer:
             logger.error(f"Initialization failed: {e}")
             traceback.print_exc()
             return False
+
+    # ------------------------------------------------------------------
+    # Pi startup check – always runs off the main thread
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _probe_url(url: str, is_stream: bool = False, total_timeout: float = 3.0) -> bool:
+        """
+        Probe a single URL with a hard wall-clock timeout enforced by a
+        worker Future (not just requests' socket timeout).
+
+        For MJPEG streams (is_stream=True):
+          - Opens with stream=True
+          - Reads at most 1 KB (enough to find the first JPEG boundary)
+          - Closes the connection immediately
+
+        Returns True if the server replied 200 within total_timeout seconds.
+
+        IMPORTANT: the executor is shut down with wait=False so a stuck HTTP
+        worker thread can never block the caller.  The worker is daemonised so
+        it won't prevent process exit either.
+        """
+        import requests as _req
+
+        conn_timeout = min(1.5, total_timeout)
+        read_timeout = total_timeout
+        req_timeout = (conn_timeout, read_timeout)
+
+        def _do_request():
+            try:
+                if is_stream:
+                    r = _req.get(url, stream=True, timeout=req_timeout)
+                    try:
+                        if r.status_code != 200:
+                            return False
+                        # Read at most first 1 KB or first JPEG boundary, then close immediately
+                        chunk = b""
+                        for data in r.iter_content(chunk_size=256):
+                            chunk += data
+                            if len(chunk) >= 1024 or b"\xff\xd8" in chunk:
+                                break
+                        return True
+                    finally:
+                        try:
+                            r.close()
+                        except Exception:
+                            pass
+                else:
+                    r = _req.get(url, timeout=req_timeout)
+                    try:
+                        return r.status_code == 200
+                    finally:
+                        try:
+                            r.close()
+                        except Exception:
+                            pass
+            except Exception:
+                return False
+
+        # Use an explicit executor so we can call shutdown(wait=False) and
+        # never block when the HTTP worker is stuck on a hanging stream.
+        ex = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="PiProbe",
+        )
+        try:
+            fut = ex.submit(_do_request)
+            try:
+                return bool(fut.result(timeout=total_timeout))
+            except concurrent.futures.TimeoutError:
+                fut.cancel()
+                return False
+            except Exception:
+                return False
+        finally:
+            # wait=False: don't block if the worker is still stuck in a
+            # slow/endless HTTP response.
+            ex.shutdown(wait=False)
+
+    def _run_pi_startup_check(self) -> None:
+        """
+        Background thread: resolve raspberrypi.local (2 s limit), then probe
+        /video (stream, 3 s), /sensors (3 s) and /motion (3 s).
+
+        Logs one summary line:
+          Startup check (background): Pi hub OK|FAIL /video OK|FAIL
+              /sensors OK|FAIL /motion OK|FAIL
+        and a warning if the whole check took > 3 s.
+        """
+        t_start = time.monotonic()
+
+        pi_host   = getattr(config, 'PI_HOST',       'raspberrypi.local')
+        pi_stream = getattr(config, 'PI_STREAM_URL',  f'http://{pi_host}:5000/video')
+        pi_sensors= getattr(config, 'SENSORS_URL',    f'http://{pi_host}:5000/sensors')
+        pi_motion = getattr(config, 'MOTION_URL',     f'http://{pi_host}:5000/motion')
+
+        # --- Step 1: DNS resolution with a 2 s hard limit ---
+        hub_ok = False
+        _dns_ex = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="PiDNS"
+        )
+        try:
+            dns_fut = _dns_ex.submit(socket.getaddrinfo, pi_host, 5000)
+            try:
+                dns_fut.result(timeout=2.0)
+                hub_ok = True
+            except (concurrent.futures.TimeoutError, OSError):
+                logger.warning(
+                    "Cannot resolve raspberrypi.local (is the Pi on and on the same network?)"
+                )
+            except Exception:
+                pass
+        finally:
+            _dns_ex.shutdown(wait=False)  # never block on a stuck getaddrinfo
+
+        # --- Step 2: Probe each endpoint (only if DNS resolved) ---
+        def _probe_with_retry(url: str, is_stream: bool = False) -> bool:
+            """One try, then 1 s pause, then one retry – both with 3 s hard limit."""
+            if LaptopMLServer._probe_url(url, is_stream=is_stream, total_timeout=3.0):
+                return True
+            time.sleep(1.0)
+            return LaptopMLServer._probe_url(url, is_stream=is_stream, total_timeout=3.0)
+
+        if hub_ok:
+            _probe_ex = concurrent.futures.ThreadPoolExecutor(
+                max_workers=3, thread_name_prefix="PiEndpoints"
+            )
+            try:
+                fut_video = _probe_ex.submit(_probe_with_retry, pi_stream, True)
+                fut_sensors = _probe_ex.submit(_probe_with_retry, pi_sensors, False)
+                fut_motion = _probe_ex.submit(_probe_with_retry, pi_motion, False)
+                video_ok = fut_video.result()
+                sensors_ok = fut_sensors.result()
+                motion_ok = fut_motion.result()
+            finally:
+                _probe_ex.shutdown(wait=False)
+        else:
+            video_ok = sensors_ok = motion_ok = False
+
+        elapsed = time.monotonic() - t_start
+
+        logger.info(
+            "Startup check (background): Pi hub %s /video %s /sensors %s /motion %s",
+            "OK" if hub_ok    else "FAIL",
+            "OK" if video_ok  else "FAIL",
+            "OK" if sensors_ok else "FAIL",
+            "OK" if motion_ok else "FAIL",
+        )
+        if elapsed > 3.0:
+            logger.warning(
+                "Startup check (background) took %.1f s (expected <= 3 s) – "
+                "check network connectivity to raspberrypi.local",
+                elapsed,
+            )
 
     def print_thread_diagnostics(self) -> str:
         """Print one startup line with the thread counts (torch, OpenVINO, InsightFace, STT) for diagnosis."""
@@ -1624,6 +1828,31 @@ class LaptopMLServer:
             if not destination:
                 self.audio.speak_status("Where do you want to go?")
                 return
+
+            # If X matches a remembered object name or alias, treat it as "find X" and say "Finding your <X>".
+            # Only geocode when X isn't a remembered object.
+            matched_obj, obj_score = self._match_remembered_with_score(destination) if self.object_memory else (None, 0.0)
+            if matched_obj and obj_score >= 0.5:
+                clean_target = clean_object_name(matched_obj)
+                self.audio.speak_social(f"Finding your {clean_target}")
+                logger.info(f"[OK] Voice: 'navigate to {destination}' redirected to find '{matched_obj}'")
+                if self.find_guide:
+                    self.find_guide.start(matched_obj, "")
+                    target_cls = None
+                    if self.object_memory:
+                        cached_info = self.object_memory.get_cached_object(matched_obj)
+                        if cached_info:
+                            target_cls = cached_info.get('yolo_class')
+                    if not target_cls and self.object_memory:
+                        remembered_items = self.object_memory.list_remembered_objects()
+                        for r_name, r_class in remembered_items:
+                            if r_name == matched_obj:
+                                target_cls = r_class
+                                break
+                    if target_cls and hasattr(self.find_guide, '_target_class'):
+                        self.find_guide._target_class = target_cls
+                return
+
             self.audio.speak_social(f"Navigating to {destination}")
             logger.info(f"[OK] Voice: GPS navigation to {destination}")
             dest_coords = self.osm_navigator.geocode_address(
@@ -1672,10 +1901,74 @@ class LaptopMLServer:
                 self._shutdown()
 
         def handle_enroll_face(params):
-            p = dict(params)
-            if 'thing' not in p:
-                p['thing'] = 'person'
-            handle_remember(p)
+            """Start face enrollment. If name already known, enroll immediately.
+            If no name given, ask 'Who is this? Say their name' and open an 8 s
+            dictation window to capture the name before enrolling.
+            """
+            if self.enrollment_active:
+                self._speak_reply("Already enrolling an object")
+                return
+
+            name = (params.get('name') or params.get('alias') or '').strip()
+
+            def _do_face_enroll(chosen_name):
+                from voice_command_system import apply_name_hints
+                chosen_name = apply_name_hints(chosen_name.strip())
+                if not chosen_name:
+                    self._speak_reply("I didn't catch a name. Please try again.")
+                    return
+
+                # Retry detection for up to 2 s
+                start_wait = time.time()
+                face_visible = False
+                while time.time() - start_wait < 2.0:
+                    if self.current_frame is not None and self.face_recognizer:
+                        if hasattr(self.face_recognizer, 'detect_faces'):
+                            try:
+                                detected = self.face_recognizer.detect_faces(self.current_frame)
+                                if detected:
+                                    face_visible = True
+                                    break
+                            except Exception:
+                                pass
+                        else:
+                            face_visible = True
+                            break
+                    time.sleep(0.05)
+
+                if not face_visible or self.current_frame is None:
+                    self._speak_reply("I can't see a person. Hold them in front of the camera.")
+                    return
+
+                success = False
+                if self.face_recognizer and hasattr(self.face_recognizer, 'enroll_face'):
+                    try:
+                        success = self.face_recognizer.enroll_face(self.current_frame, chosen_name)
+                    except Exception as e:
+                        logger.error(f"Error enrolling face: {e}")
+                        success = False
+
+                if success:
+                    logger.info(f"[OK] Enrolled face: {chosen_name}")
+                    try:
+                        import stt_engine
+                        stt_engine.refresh_keywords(db=self.db)
+                    except Exception as e:
+                        logger.debug(f"Could not refresh STT keywords: {e}")
+                    self._speak_reply(f"Enrolled {chosen_name}")
+                else:
+                    self._speak_reply("I can't see a person. Hold them in front of the camera.")
+
+            if name:
+                _do_face_enroll(name)
+            else:
+                # No name yet — ask the user
+                self._speak_reply("Who is this? Say their name.")
+                self.voice_system.open_dictation_window(
+                    on_dictate=_do_face_enroll,
+                    timeout=8.0
+                )
+
 
         def handle_audio_toggle(params):
             self.audio_enabled = not self.audio_enabled
@@ -1752,11 +2045,16 @@ class LaptopMLServer:
                 self.audio.speak_social(reply)
 
         def handle_where_am_i(params):
-            place = "your current location"
-            if self.gps_tracker:
-                place = self.gps_tracker.get_current_place_name()
-            self._speak_reply(f"You are near {place}")
-            logger.info(f"[OK] Voice where am I: You are near {place}")
+            speech = None
+            if self.gps_tracker and hasattr(self.gps_tracker, 'get_where_am_i_speech'):
+                res = self.gps_tracker.get_where_am_i_speech()
+                if isinstance(res, str):
+                    speech = res
+            if speech is None:
+                place = self.gps_tracker.get_current_place_name() if self.gps_tracker else "your current location"
+                speech = f"You are near {place}"
+            self._speak_reply(speech)
+            logger.info(f"[OK] Voice where am I: {speech}")
 
         def handle_help(params):
             if not self.audio_enabled or not self.audio:
@@ -1813,13 +2111,59 @@ class LaptopMLServer:
                 else:
                     new_state = not self.obstacle_alerter.beeps_enabled
                     self.obstacle_alerter.set_beeps_enabled(new_state)
-                    self.audio.speak_status(f"Obstacle beeps {'on' if new_state else 'off'}.")
             else:
                 self.audio.speak_status("Obstacle alert not active.")
 
+        def handle_im_okay(params):
+
+            if hasattr(self, 'emergency_manager') and self.emergency_manager:
+                self.emergency_manager.handle_voice_im_okay()
+            else:
+                self._speak_reply("Glad you're fine")
+
+        def handle_emergency(params):
+            if hasattr(self, 'emergency_manager') and self.emergency_manager:
+                self.emergency_manager.handle_voice_emergency()
+            else:
+                self._speak_reply("Emergency alert triggered")
+
+        def handle_simulate_fall(params):
+            if hasattr(self, 'emergency_manager') and self.emergency_manager:
+                self.emergency_manager.handle_voice_simulate_fall()
+            else:
+                self._speak_reply("Simulating fall check-in")
+
+        def handle_check_sensor(params):
+            if getattr(self, 'obstacle_alerter', None):
+                dist = self.obstacle_alerter.get_distance()
+                if dist is not None:
+                    dist_cm = int(round(dist))
+                    self._speak_reply(f"The distance is {dist_cm} centimetres")
+                else:
+                    self._speak_reply("The distance sensor has no reading right now")
+            else:
+                self._speak_reply("The distance sensor has no reading right now")
+
+        def handle_test_beep(params):
+            self._speak_reply("Testing obstacle beep")
+            if getattr(self, 'obstacle_alerter', None):
+                threading.Thread(
+                    target=self.obstacle_alerter.play_test_pattern,
+                    kwargs={'duration_s': 6.0},
+                    daemon=True,
+                    name="TestBeepThread"
+                ).start()
+
+        self.voice_system.register_command_handler('im_okay', handle_im_okay)
+        self.voice_system.register_command_handler('emergency', handle_emergency)
+        self.voice_system.register_command_handler('simulate_fall', handle_simulate_fall)
+
         self.voice_system.register_command_handler('obstacle_beeps', handle_obstacle_beeps)
+        self.voice_system.register_command_handler('check_sensor', handle_check_sensor)
+        self.voice_system.register_command_handler('test_beep', handle_test_beep)
         self.voice_system.register_command_handler('yes', lambda _: self._confirm_pending_match())
         self.voice_system.register_command_handler('no', lambda _: self._reject_pending_match())
+
 
         if self.voice_system and hasattr(self.voice_system, 'parser'):
             self.voice_system.parser.known_targets_provider = self._get_known_fallback_targets
@@ -2389,8 +2733,9 @@ class LaptopMLServer:
                             )
 
                             if match_tier == 'high':
-                                # Audio with cooldown (suppress if find session is actively guiding toward it)
-                                if self.audio_enabled and not self.is_quiet_mode_active() and not is_find_target:
+                                # Audio with cooldown (suppress if find session is actively guiding toward it or if currently enrolling)
+                                enrolling_name = self.enrollment_target_obj.get('custom_name') if (self.enrollment_active and self.enrollment_target_obj) else None
+                                if self.audio_enabled and not self.is_quiet_mode_active() and not is_find_target and (custom_name != enrolling_name):
                                     now = time.time()
                                     last = self.last_remembered_announce.get(custom_name, 0)
                                     if (now - last) > self.remember_announce_cooldown:
@@ -2517,6 +2862,9 @@ class LaptopMLServer:
                                     self.audio.speak_social(
                                         f"Remembered your {clean_name}"
                                     )
+                                    now = time.time()
+                                    self.last_remembered_announce[name] = now + 15.0
+                                    self.last_remembered_announce[clean_name] = now + 15.0
                             else:
                                 logger.error(f"[FAIL] Enrollment failed for '{name}'")
 
@@ -2549,9 +2897,29 @@ class LaptopMLServer:
                     if self.face_worker is None:
                         self.face_worker = FaceWorker(self.face_recognizer, rate_hz=3.0)
                         self.face_worker.start()
-                    self.face_worker.submit_frame(frame, yolo_has_person, is_find_active)
+                    person_boxes = [o['bbox'] for o in detections if o.get('class_name') == 'person']
+                    self.face_worker.submit_frame(frame, yolo_has_person, is_find_active, person_boxes=person_boxes)
                     faces = self.face_worker.get_latest_results(yolo_has_person)
                     self._last_faces_result = faces
+
+                # Associate recognized faces to person detections by containment
+                for det in detections:
+                    if det.get('class_name') == 'person':
+                        pb = det.get('bbox')
+                        if not pb:
+                            continue
+                        matched_face_name = None
+                        for f in faces:
+                            fb = f.get('bbox')
+                            if not fb:
+                                continue
+                            fcx = (fb[0] + fb[2]) / 2.0
+                            fcy = (fb[1] + fb[3]) / 2.0
+                            if pb[0] <= fcx <= pb[2] and pb[1] <= fcy <= pb[3]:
+                                matched_face_name = f.get('name')
+                                break
+                        if matched_face_name:
+                            det['face_name'] = matched_face_name
 
                 self.last_recognized_faces = [
                     f['name'] for f in faces if f['name'] != 'Unknown'

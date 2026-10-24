@@ -108,6 +108,10 @@ def _create_placeholder_frame(text):
 
 # ─── API Endpoints ───────────────────────────────────────
 
+_last_phone_post_time = None
+_last_phone_accuracy = None
+
+
 @app.route('/api/location', methods=['GET'])
 def get_location():
     """Return current GPS coordinates (highest-priority available source)"""
@@ -122,13 +126,17 @@ def get_location():
             source = "ip"
         else:
             source = "mock"
-        return jsonify({
+        ts = _last_phone_post_time if (source == "phone" and _last_phone_post_time is not None) else time.time()
+        resp = {
             "latitude": pos[0],
             "longitude": pos[1],
             "place_name": place_name,
             "source": source,
-            "timestamp": time.time()
-        })
+            "timestamp": ts
+        }
+        if source == "phone" and _last_phone_accuracy is not None:
+            resp["accuracy"] = _last_phone_accuracy
+        return jsonify(resp)
     # Default fallback: RR Nagar, Bangalore
     return jsonify({
         "latitude": 12.926516,
@@ -148,6 +156,7 @@ def post_location():
 
     Expected JSON body: {"latitude": float, "longitude": float, "accuracy": float (optional)}
     """
+    global _last_phone_post_time, _last_phone_accuracy
     data = request.get_json(silent=True) or {}
     try:
         lat = float(data['latitude'])
@@ -161,8 +170,16 @@ def post_location():
     except (TypeError, ValueError):
         accuracy = None
 
-    gps_tracker.set_phone_position(lat, lon, accuracy=accuracy)
-    return jsonify({"status": "ok", "latitude": lat, "longitude": lon, "accuracy": accuracy})
+    _last_phone_post_time = time.time()
+    _last_phone_accuracy = accuracy
+    gps_tracker.set_phone_position(lat, lon, accuracy=accuracy, timestamp=_last_phone_post_time)
+    return jsonify({
+        "status": "ok",
+        "latitude": lat,
+        "longitude": lon,
+        "accuracy": accuracy,
+        "timestamp": _last_phone_post_time
+    })
 
 
 @app.route('/locate')
@@ -180,66 +197,258 @@ def locate_page():
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VisionMate - Share Location</title>
+  <title>VisionMate Location Sharing</title>
   <style>
-    body {{ font-family: sans-serif; text-align: center; padding: 2em; }}
-    #status {{ font-size: 1.1em; margin-top: 1em; white-space: pre-line; }}
-    .ok {{ color: #1a7f37; }}
-    .err {{ color: #cf222e; }}
+    :root {{
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --ok: #2ea043;
+      --err: #cf222e;
+      --waiting: #d29922;
+      --sending: #58a6ff;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      text-align: center;
+      padding: 1.5em 1em;
+      margin: 0;
+    }}
+    .container {{
+      max-width: 480px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5em;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }}
+    h2 {{
+      margin: 0.2em 0 0.5em 0;
+      color: #f0f6fc;
+      font-size: 1.4em;
+    }}
+    p.subtitle {{
+      color: var(--text-muted);
+      font-size: 0.9em;
+      margin-bottom: 1.2em;
+    }}
+    #status {{
+      font-size: 1.05em;
+      padding: 0.8em;
+      border-radius: 8px;
+      margin: 1em 0;
+      white-space: pre-line;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      font-weight: 500;
+    }}
+    .ok {{ color: var(--ok); border-color: rgba(46,160,67,0.4) !important; background: rgba(46,160,67,0.1) !important; }}
+    .err {{ color: var(--err); border-color: rgba(207,34,46,0.4) !important; background: rgba(207,34,46,0.1) !important; }}
+    .waiting {{ color: var(--waiting); border-color: rgba(210,153,34,0.4) !important; background: rgba(210,153,34,0.1) !important; }}
+    .status-sending {{ color: var(--sending); font-weight: 600; }}
+    .info-card {{
+      background: rgba(0,0,0,0.25);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6em 1em;
+      text-align: left;
+      font-size: 0.95em;
+    }}
+    .info-row {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5em 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }}
+    .info-row:last-child {{
+      border-bottom: none;
+    }}
+    .info-label {{
+      color: var(--text-muted);
+      font-weight: 500;
+    }}
+    .info-value {{
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+      color: #f0f6fc;
+      font-weight: 600;
+    }}
   </style>
 </head>
 <body>
-  <h2>VisionMate Location Sharing</h2>
-  <p>Keep this page open to share your precise location with the device.</p>
-  <div id="status">Requesting permission...</div>
+  <div class="container">
+    <h2>VisionMate Location Sharing</h2>
+    <p class="subtitle">Keep this page open to share your precise location with the device.</p>
+    <div id="status" class="waiting">Waiting for location... try near a window</div>
+    <div class="info-card">
+      <div class="info-row"><span class="info-label">Status</span><span class="info-value" id="sendStatus">Idle</span></div>
+      <div class="info-row"><span class="info-label">Latitude</span><span class="info-value" id="lat">-</span></div>
+      <div class="info-row"><span class="info-label">Longitude</span><span class="info-value" id="lon">-</span></div>
+      <div class="info-row"><span class="info-label">Accuracy</span><span class="info-value" id="acc">-</span></div>
+      <div class="info-row"><span class="info-label">Time</span><span class="info-value" id="time">-</span></div>
+      <div class="info-row"><span class="info-label">Positions Sent</span><span class="info-value" id="sentCount">0</span></div>
+    </div>
+  </div>
   <script>
     const statusEl = document.getElementById('status');
+    const sendStatusEl = document.getElementById('sendStatus');
+    const latEl = document.getElementById('lat');
+    const lonEl = document.getElementById('lon');
+    const accEl = document.getElementById('acc');
+    const timeEl = document.getElementById('time');
+    const sentCountEl = document.getElementById('sentCount');
+
+    let lowWatchId = null;
+    let highWatchId = null;
     let lastPos = null;
-    if (!navigator.geolocation) {{
-      statusEl.textContent = 'Geolocation is not supported by this browser.';
+    let sentCount = 0;
+    let lastSentTime = 0;
+
+    if (window.isSecureContext === false) {{
       statusEl.className = 'err';
+      statusEl.textContent = 'Open the https link and accept the certificate';
+      sendStatusEl.textContent = 'Insecure context';
+    }} else if (!navigator.geolocation) {{
+      statusEl.className = 'err';
+      statusEl.textContent = 'Geolocation is not supported by this browser.';
+      sendStatusEl.textContent = 'Unsupported';
     }} else {{
-      navigator.geolocation.watchPosition(
-        (pos) => {{
-          const {{ latitude, longitude, accuracy }} = pos.coords;
-          lastPos = {{ latitude, longitude, accuracy }};
-          fetch('/api/location', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{ latitude, longitude, accuracy }})
+      function sendPosition(posData) {{
+        sendStatusEl.textContent = 'Sending...';
+        sendStatusEl.className = 'info-value status-sending';
+
+        fetch('/api/location', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            latitude: posData.latitude,
+            longitude: posData.longitude,
+            accuracy: posData.accuracy
           }})
-          .then(r => r.json())
-          .then(() => {{
-            statusEl.className = 'ok';
-            statusEl.textContent =
-              'Sharing location:\\n' + latitude.toFixed(6) + ', ' + longitude.toFixed(6) +
-              '\\n(accuracy ~' + Math.round(accuracy) + 'm)';
-          }})
-          .catch((e) => {{
-            statusEl.className = 'err';
-            statusEl.textContent = 'Failed to send location: ' + e;
-          }});
-        }},
-        (err) => {{
-          statusEl.className = 'err';
-          statusEl.textContent = 'Location error: ' + err.message +
-            '\\n\\nMake sure you allowed location access, and that this page ' +
-            'was opened over https://{host_hint}:5001/locate on the same network.';
-        }},
-        {{ enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }}
-      );
-      // Keep-alive: watchPosition only fires when the position changes, but the server
-      // treats a fix as stale after 30s. Re-send the last fix every 5s.
-      setInterval(() => {{
+        }})
+        .then(function(r) {{
+          if (!r.ok) {{
+            throw new Error('HTTP ' + r.status);
+          }}
+          return r.json();
+        }})
+        .then(function() {{
+          sentCount++;
+          lastSentTime = Date.now();
+          const nowStr = new Date().toLocaleTimeString();
+
+          sendStatusEl.textContent = 'Sent OK';
+          sendStatusEl.className = 'info-value ok';
+          statusEl.className = 'ok';
+          statusEl.textContent = 'Sharing location';
+
+          latEl.textContent = Number(posData.latitude).toFixed(6);
+          lonEl.textContent = Number(posData.longitude).toFixed(6);
+          accEl.textContent = Math.round(posData.accuracy) + ' m';
+          timeEl.textContent = nowStr;
+          sentCountEl.textContent = sentCount;
+        }})
+        .catch(function(e) {{
+          sendStatusEl.textContent = 'Failed to send: ' + e;
+          sendStatusEl.className = 'info-value err';
+        }});
+      }}
+
+      function onPosition(pos, isHigh) {{
+        const coords = pos.coords;
+        const latitude = coords.latitude;
+        const longitude = coords.longitude;
+        const accuracy = coords.accuracy;
+
+        // Use whichever result arrives first and keep improving as better ones come in
         if (lastPos) {{
-          fetch('/api/location', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify(lastPos)
-          }}).catch(() => {{}});
+          if (!isHigh && lastPos.isHigh && accuracy > lastPos.accuracy) {{
+            return;
+          }}
+        }}
+
+        lastPos = {{
+          latitude: latitude,
+          longitude: longitude,
+          accuracy: accuracy,
+          isHigh: isHigh
+        }};
+        sendPosition(lastPos);
+      }}
+
+      function onError(err, source) {{
+        if (err.code === 1 || err.code === err.PERMISSION_DENIED) {{
+          statusEl.className = 'err';
+          statusEl.textContent = 'Location permission denied.\\nPlease allow location access for this site in your browser settings (https://{host_hint}:5001/locate) and reload.';
+          if (lowWatchId !== null) {{ navigator.geolocation.clearWatch(lowWatchId); lowWatchId = null; }}
+          if (highWatchId !== null) {{ navigator.geolocation.clearWatch(highWatchId); highWatchId = null; }}
+        }} else if (err.code === 2 || err.code === err.POSITION_UNAVAILABLE) {{
+          statusEl.className = 'err';
+          statusEl.textContent = 'Location unavailable, turn on phone location';
+          setTimeout(function() {{
+            if (source === 'low') startLowWatch();
+            else startHighWatch();
+          }}, 5000);
+        }} else if (err.code === 3 || err.code === err.TIMEOUT) {{
+          statusEl.className = 'waiting';
+          statusEl.textContent = 'Waiting for location... try near a window';
+          if (source === 'low') {{
+            if (lowWatchId !== null) {{ navigator.geolocation.clearWatch(lowWatchId); lowWatchId = null; }}
+            setTimeout(startLowWatch, 1000);
+          }} else {{
+            if (highWatchId !== null) {{ navigator.geolocation.clearWatch(highWatchId); highWatchId = null; }}
+            setTimeout(startHighWatch, 1000);
+          }}
+        }} else {{
+          statusEl.className = 'err';
+          statusEl.textContent = 'Location error: ' + (err.message || 'Unknown error');
+        }}
+      }}
+
+      function startLowWatch() {{
+        if (lowWatchId !== null) {{
+          navigator.geolocation.clearWatch(lowWatchId);
+          lowWatchId = null;
+        }}
+        lowWatchId = navigator.geolocation.watchPosition(
+          function(pos) {{ onPosition(pos, false); }},
+          function(err) {{ onError(err, 'low'); }},
+          {{ enableHighAccuracy: false, timeout: 30000, maximumAge: 60000 }}
+        );
+      }}
+
+      function startHighWatch() {{
+        if (highWatchId !== null) {{
+          navigator.geolocation.clearWatch(highWatchId);
+          highWatchId = null;
+        }}
+        highWatchId = navigator.geolocation.watchPosition(
+          function(pos) {{ onPosition(pos, true); }},
+          function(err) {{ onError(err, 'high'); }},
+          {{ enableHighAccuracy: true, timeout: 60000 }}
+        );
+      }}
+
+      // Start low-accuracy first, and in parallel request high-accuracy watch
+      startLowWatch();
+      startHighWatch();
+
+      // Keep-alive: re-send last fix every 5s so server does not treat fix as stale after 30s
+      setInterval(function() {{
+        if (lastPos && (Date.now() - lastSentTime >= 4500)) {{
+          sendPosition(lastPos);
         }}
       }}, 5000);
-      if ('wakeLock' in navigator) {{ navigator.wakeLock.request('screen').catch(() => {{}}); }}
+
+      if ('wakeLock' in navigator) {{
+        navigator.wakeLock.request('screen').catch(function() {{}});
+      }}
     }}
   </script>
 </body>

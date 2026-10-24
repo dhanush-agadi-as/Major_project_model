@@ -85,6 +85,10 @@ class SpatialNavigator:
         self._last_announced_person_count = 0
         self._last_announced_person_zone = None
         self._person_announced_under_1m = False
+
+        # Spatial speech repetition suppression
+        self._last_spatial_announcement_time = -999.0
+        self._last_spoken_info = {}  # class_name -> {'time': float, 'dist_m': float, 'direction': str, 'bucket': str}
         
         logger.info(f"Spatial Navigator initialized ({frame_width}x{frame_height})")
         logger.info(f"  Zone size: {self.zone_width:.0f}x{self.zone_height:.0f}")
@@ -475,10 +479,29 @@ class SpatialNavigator:
             closest_zone_speech = zone_speech_map.get(closest_zone, 'ahead')
 
             person_count = len(person_dets)
-            if person_count == 1:
-                message = self._create_guidance_message('person', closest_zone, closest_dist)
+
+            # Check for recognized known faces
+            known_names = []
+            for d in person_dets:
+                fn = d.get('face_name')
+                if fn and fn != 'Unknown' and fn not in known_names:
+                    known_names.append(fn)
+
+            unknown_count = person_count - len(known_names)
+
+            if known_names:
+                known_str = " and ".join(known_names)
+                if unknown_count == 0:
+                    message = f"{known_str} {closest_zone_speech}"
+                elif unknown_count == 1:
+                    message = f"{known_str} {closest_zone_speech}, and one more person"
+                else:
+                    message = f"{known_str} {closest_zone_speech}, and {unknown_count} more people"
             else:
-                message = f"{person_count} people {closest_zone_speech}"
+                if person_count == 1:
+                    message = self._create_guidance_message('person', closest_zone, closest_dist)
+                else:
+                    message = f"{person_count} people {closest_zone_speech}"
 
             x1, y1, x2, y2 = closest_bbox
             area_ratio = ((x2 - x1) * (y2 - y1)) / self.frame_area
@@ -707,6 +730,42 @@ class SpatialNavigator:
                     return True
                 return False
 
+        # At most one spatial announcement per 4 s.
+        if (current_time - self._last_spatial_announcement_time) < 4.0:
+            return False
+
+        # Don't repeat the same spatial announcement for the same object and distance bucket
+        # within 10 s unless the distance changes by 30% or more or the direction changes.
+        zone_speech_map = {
+            'top-left': 'left', 'top': 'ahead', 'top-right': 'right',
+            'left': 'left', 'center': 'ahead', 'middle': 'ahead', 'right': 'right',
+            'bottom-left': 'left', 'bottom': 'ahead', 'bottom-right': 'right', 'ahead': 'ahead'
+        }
+        curr_dir = guidance_item.get('zone_speech') or zone_speech_map.get(zone, 'ahead')
+        curr_bucket = guidance_item.get('distance', 'far')
+        curr_dist_m = guidance_item.get('estimated_distance_m')
+        if curr_dist_m is None and u_m is not None:
+            curr_dist_m = u_m
+
+        prev_info = self._last_spoken_info.get(class_name)
+        if prev_info is not None:
+            time_since = current_time - prev_info['time']
+            if time_since < 10.0:
+                prev_bucket = prev_info.get('bucket')
+                prev_dir = prev_info.get('direction')
+                prev_dist_m = prev_info.get('dist_m')
+
+                direction_changed = (curr_dir != prev_dir)
+                dist_changed_30pct = False
+                if prev_dist_m is not None and curr_dist_m is not None and prev_dist_m > 0:
+                    dist_changed_30pct = (abs(curr_dist_m - prev_dist_m) / prev_dist_m) >= 0.30
+
+                if direction_changed or dist_changed_30pct:
+                    return True
+
+                if curr_bucket == prev_bucket:
+                    return False
+
         # Group person announcements rules:
         # 1. "Person ahead": for a person who stays in view, don't repeat it within 30 s.
         #    Announce again only when the count changes, a new person arrives, or a person gets closer than 1 m.
@@ -819,6 +878,22 @@ class SpatialNavigator:
         self._last_spoken_time[key] = current_time
         self._last_spoken_distance[key] = guidance_item.get('distance', 'far')
         self._was_absent_over_3s[key] = False
+
+        self._last_spatial_announcement_time = current_time
+        zone_speech_map = {
+            'top-left': 'left', 'top': 'ahead', 'top-right': 'right',
+            'left': 'left', 'center': 'ahead', 'middle': 'ahead', 'right': 'right',
+            'bottom-left': 'left', 'bottom': 'ahead', 'bottom-right': 'right', 'ahead': 'ahead'
+        }
+        curr_dir = guidance_item.get('zone_speech') or zone_speech_map.get(zone, 'ahead')
+        curr_dist_m = guidance_item.get('estimated_distance_m')
+        if class_name:
+            self._last_spoken_info[class_name] = {
+                'time': current_time,
+                'dist_m': curr_dist_m,
+                'direction': curr_dir,
+                'bucket': guidance_item.get('distance', 'far'),
+            }
 
         if class_name == 'person':
             self._person_announced = True

@@ -23,9 +23,16 @@ import numpy as np
 # Ensure parent directory is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import config
 import camera_source
 from camera_source import open_camera, parse_camera_source, CameraStreamReader
 from pi_distance_client import PIDistanceClient
+
+PI_STREAM_URL = config.PI_STREAM_URL   # http://raspberrypi.local:5000/video
+PI_HOST = config.PI_HOST               # raspberrypi.local
+SENSORS_URL = config.SENSORS_URL
+DISTANCE_URL = config.DISTANCE_URL
+MOTION_URL = config.MOTION_URL
 
 
 # ─── 1. Tests for open_camera (0 vs URL) ──────────────────────────────────────
@@ -35,7 +42,7 @@ def test_parse_camera_source():
     assert parse_camera_source(0) == 0
     assert parse_camera_source("0") == 0
     assert parse_camera_source("1") == 1
-    assert parse_camera_source("http://10.117.98.217:5000/video") == "http://10.117.98.217:5000/video"
+    assert parse_camera_source(PI_STREAM_URL) == PI_STREAM_URL
     assert parse_camera_source("rtsp://example.com/stream") == "rtsp://example.com/stream"
 
 
@@ -79,7 +86,7 @@ def test_open_camera_for_url_stream(monkeypatch):
 
     monkeypatch.setattr(camera_source.cv2, "VideoCapture", fake_video_capture)
 
-    url = "http://10.117.98.217:5000/video"
+    url = PI_STREAM_URL  # must equal config.PI_STREAM_URL
     cap = open_camera(url, width=640, height=480, fps=30)
     assert cap is mock_cap
 
@@ -123,7 +130,7 @@ def test_frame_reader_returns_latest_frame(monkeypatch):
 
     monkeypatch.setattr(camera_source, "open_camera", lambda *args, **kwargs: FakeCap())
 
-    reader = CameraStreamReader(source="http://10.117.98.217:5000/video", connect_timeout=1.0)
+    reader = CameraStreamReader(source=PI_STREAM_URL, connect_timeout=1.0)
     reader.start()
 
     try:
@@ -169,7 +176,7 @@ def test_frame_reader_reconnects_after_failed_reads(monkeypatch):
 
     monkeypatch.setattr(camera_source, "open_camera", mock_open_cam)
 
-    reader = CameraStreamReader(source="http://10.117.98.217:5000/video", connect_timeout=1.0)
+    reader = CameraStreamReader(source=PI_STREAM_URL, connect_timeout=1.0)
     reader.start()
 
     try:
@@ -187,7 +194,7 @@ def test_frame_reader_connect_timeout_exits(monkeypatch):
     mock_bad_cap.isOpened.return_value = False
     monkeypatch.setattr(camera_source, "open_camera", lambda *args, **kwargs: mock_bad_cap)
 
-    reader = CameraStreamReader(source="http://10.117.98.217:5000/video", connect_timeout=0.2, exit_on_fail=False)
+    reader = CameraStreamReader(source=PI_STREAM_URL, connect_timeout=0.2, exit_on_fail=False)
     with pytest.raises(RuntimeError) as exc_info:
         reader.start()
 
@@ -198,7 +205,7 @@ def test_frame_reader_connect_timeout_exits(monkeypatch):
 
 def test_distance_client_returns_none_when_stale():
     """Verify get_distance() returns None when data is older than 500 ms."""
-    client = PIDistanceClient(host="10.117.98.217", stale_timeout_ms=500)
+    client = PIDistanceClient(host=PI_HOST, stale_timeout_ms=500)
 
     # Simulate fresh reading
     client._process_reading({"distance_cm": 45.0, "age_ms": 50, "ok": True})
@@ -215,7 +222,7 @@ def test_distance_client_returns_none_when_stale():
 
 def test_distance_client_ignores_out_of_range():
     """Verify distance client ignores readings < 2.0 cm or > 400.0 cm."""
-    client = PIDistanceClient(host="10.117.98.217")
+    client = PIDistanceClient(host=PI_HOST)
 
     # Valid reading at 50 cm
     client._process_reading({"distance_cm": 50.0, "age_ms": 20, "ok": True})
@@ -234,7 +241,7 @@ def test_distance_client_ignores_out_of_range():
 
 def test_distance_client_median_smoothing():
     """Verify median smoothing of the last 3 valid readings."""
-    client = PIDistanceClient(host="10.117.98.217")
+    client = PIDistanceClient(host=PI_HOST)
 
     # Send 3 readings: 50.0, 70.0, 60.0
     client._process_reading({"distance_cm": 50.0, "age_ms": 10, "ok": True})
@@ -255,9 +262,13 @@ def test_distance_client_median_smoothing():
     assert client.get_distance() == 25.0
 
 
-def test_distance_client_stops_cleanly():
+def test_distance_client_stops_cleanly(monkeypatch):
     """Verify stop() shuts down thread and cleans up session."""
-    client = PIDistanceClient(host="10.117.98.217")
+    monkeypatch.setattr(
+        "requests.Session.get",
+        lambda *args, **kwargs: MagicMock(status_code=200, json=lambda: {"ok": True, "distance_cm": 50.0, "age_ms": 10})
+    )
+    client = PIDistanceClient(host=PI_HOST)
     client.start()
     th = client._thread
     assert th is not None
@@ -356,3 +367,76 @@ def test_dry_run_laptop_server_and_rpi_client():
     assert server_res.returncode == 0, f"laptop_server --dry-run failed with code {server_res.returncode}:\n{server_res.stderr}\n{server_res.stdout}"
     assert "DRY RUN OK" in server_res.stdout, f"'DRY RUN OK' not found in stdout:\n{server_res.stdout}"
 
+
+# ─── 5. Pi address enforcement tests ─────────────────────────────────────────
+
+def test_config_pi_urls_use_raspberrypi_local():
+    """All Pi URL constants must be built from raspberrypi.local, not an IP."""
+    assert config.PI_HOST == "raspberrypi.local", f"PI_HOST must be 'raspberrypi.local', got {config.PI_HOST!r}"
+    assert "raspberrypi.local" in config.PI_STREAM_URL
+    assert "raspberrypi.local" in config.SENSORS_URL
+    assert "raspberrypi.local" in config.DISTANCE_URL
+    assert "raspberrypi.local" in config.MOTION_URL
+    assert config.PI_STREAM_URL == f"http://raspberrypi.local:5000/video"
+    assert config.SENSORS_URL == f"http://raspberrypi.local:5000/sensors"
+    assert config.DISTANCE_URL == f"http://raspberrypi.local:5000/distance"
+    assert config.MOTION_URL == f"http://raspberrypi.local:5000/motion"
+
+
+def test_no_hardcoded_ip_in_tracked_python_files():
+    """Fail if any tracked Python / config file contains a hardcoded Pi IP address."""
+    import subprocess as sp
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Get git-tracked files
+    try:
+        result = sp.run(
+            ["git", "ls-files", "--error-unmatch"],
+            cwd=repo_root, capture_output=True, text=True, timeout=10
+        )
+        tracked = set(result.stdout.splitlines())
+    except Exception:
+        tracked = set()
+
+    bad_pattern = re.compile(r'10\.117\.')
+    offending = []
+    extensions = (".py", ".md", ".json", ".txt", ".cfg", ".ini", ".toml", ".yaml", ".yml")
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".pytest_cache", "venv", ".venv")]
+        for fname in files:
+            if not any(fname.endswith(ext) for ext in extensions):
+                continue
+            full = os.path.join(root, fname)
+            rel = os.path.relpath(full, repo_root).replace("\\", "/")
+            try:
+                with open(full, "r", encoding="utf-8", errors="ignore") as fh:
+                    content = fh.read()
+                if bad_pattern.search(content):
+                    offending.append(rel)
+            except Exception:
+                pass
+    assert offending == [], f"Found hardcoded Pi IP in: {offending}"
+
+
+def test_obstacle_alerter_url_never_changes_on_retry():
+    """Recovery path must never replace the URL with a different address."""
+    from obstacle_alerter import ObstacleAlerter
+    alerter = ObstacleAlerter()
+    original_url = alerter.current_url
+    # Simulate repeated failures
+    for _ in range(5):
+        alerter._try_switch_to_fallback()
+    assert alerter.current_url == original_url, "URL must not change on retry/failure"
+    assert "10.117" not in alerter.current_url
+    assert alerter.fallback_url is None
+
+
+def test_camera_source_uses_config_pi_stream_url():
+    """parse_camera_source(None) with USE_PI_CAMERA=True must resolve to PI_STREAM_URL."""
+    assert config.USE_PI_CAMERA is True
+    url = parse_camera_source(None)
+    assert url == config.PI_STREAM_URL, (
+        f"Expected {config.PI_STREAM_URL!r}, got {url!r}. "
+        "Camera default must come from config.PI_STREAM_URL."
+    )
+    assert "raspberrypi.local" in str(url)
+    assert "10.117" not in str(url)

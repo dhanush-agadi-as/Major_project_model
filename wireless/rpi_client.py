@@ -94,7 +94,7 @@ class RaspberryPiClient:
             return getattr(config, 'CLIENT_SPEAKS', False)
         return False
         
-    def initialize(self, dry_run: bool = False):
+    def initialize(self, dry_run: bool = False, demo_frames: bool = False):
         """Initialize all hardware components"""
         logger.info("Initializing Raspberry Pi Client...")
         
@@ -111,7 +111,7 @@ class RaspberryPiClient:
 
             # Verify PIDistanceClient object instantiation without opening network connection
             from pi_distance_client import PIDistanceClient
-            pi_host = getattr(config, 'PI_HOST', '10.117.98.217') if config else '10.117.98.217'
+            pi_host = getattr(config, 'PI_HOST', 'raspberrypi.local') if config else 'raspberrypi.local'
             self.distance_client = PIDistanceClient(host=pi_host)
             logger.info("[OK] ESP32 / Distance Client initialized (dry run: PIDistanceClient object created, network skipped)")
 
@@ -181,7 +181,11 @@ class RaspberryPiClient:
                     self.camera.release()
                     self.camera = None
             except Exception as e:
-                logger.warning(f"open_camera failed: {e}")
+                err_str = str(e)
+                if "raspberrypi.local" in err_str or "nodename" in err_str.lower() or "name resolution" in err_str.lower():
+                    logger.error("Cannot resolve raspberrypi.local (mDNS). Check that the Pi is on the same network.")
+                else:
+                    logger.warning(f"open_camera failed: {e}")
                 if self.camera is not None:
                     try:
                         self.camera.release()
@@ -189,14 +193,20 @@ class RaspberryPiClient:
                         pass
                     self.camera = None
 
-        # Method 4: Use test frames for demo (if no camera available)
-        if not camera_initialized:
-            logger.warning("No camera available, using TEST FRAMES for demo")
+        # In normal mode (not dry-run, not demo-frames), do NOT fall back to test frames.
+        # Test frames are only used when explicitly requested.
+        if not camera_initialized and demo_frames:
+            logger.warning("No camera available, using DEMO FRAMES (--demo-frames mode, 15 fps cap)")
             self.use_test_frames = True
             camera_initialized = True
         
         if not camera_initialized:
-            logger.error("Camera initialization failed!")
+            pi_stream_url = getattr(config, 'PI_STREAM_URL', 'http://raspberrypi.local:5000/video') if config else 'http://raspberrypi.local:5000/video'
+            logger.error(
+                f"Camera unreachable: {pi_stream_url}. "
+                "Check pi_hub.py is running and the Pi is on the same network."
+            )
+            logger.info("Camera not connected")
             return False
         
         # Initialize ESP32 serial connection
@@ -214,7 +224,7 @@ class RaspberryPiClient:
                 logger.info("Local ESP32 serial not found; starting PIDistanceClient to poll Pi distance endpoint...")
                 try:
                     from pi_distance_client import PIDistanceClient
-                    pi_host = getattr(config, 'PI_HOST', '10.117.98.217') if config else '10.117.98.217'
+                    pi_host = getattr(config, 'PI_HOST', 'raspberrypi.local') if config else 'raspberrypi.local'
                     self.distance_client = PIDistanceClient(host=pi_host).start()
                 except Exception as e:
                     logger.warning(f"Could not start PIDistanceClient: {e}")
@@ -222,7 +232,7 @@ class RaspberryPiClient:
             logger.warning(f"ESP32 connection failed: {e}")
             try:
                 from pi_distance_client import PIDistanceClient
-                pi_host = getattr(config, 'PI_HOST', '10.117.98.217') if config else '10.117.98.217'
+                pi_host = getattr(config, 'PI_HOST', 'raspberrypi.local') if config else 'raspberrypi.local'
                 self.distance_client = PIDistanceClient(host=pi_host).start()
             except Exception:
                 pass
@@ -340,11 +350,12 @@ class RaspberryPiClient:
                         continue
                         
                 elif self.use_test_frames:
-                    # Method 3: Generate test frame
+                    # Demo mode: generate test frame, capped at 15 fps
+                    await asyncio.sleep(1.0 / 15)  # cap at 15 fps
                     frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     frame[:] = (50, 100, 150)  # BGR color
                     # Add text showing it's a test
-                    cv2.putText(frame, "TEST MODE - Camera Not Available", (50, 240),
+                    cv2.putText(frame, "DEMO MODE - Camera Not Available", (50, 240),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                     import random
                     # Simulate some objects
@@ -526,16 +537,23 @@ def main():
 
     parser = argparse.ArgumentParser(description="VisionMate Raspberry Pi Client")
     parser.add_argument("laptop_ip", nargs="?", default="127.0.0.1", help="Laptop IP address")
-    parser.add_argument("--source", default=None, help="Camera source (plain number for webcam index, or stream URL)")
+    parser.add_argument("--source", default=None, help="Camera source override (webcam index or stream URL). Logs 'Using --source override'.")
+    parser.add_argument("--demo-frames", action="store_true", help="Use generated demo frames instead of camera stream (15 fps cap)")
     parser.add_argument("--dry-run", action="store_true", help="Run startup checks, print 'DRY RUN OK' and exit without opening camera, mic, or network")
     args = parser.parse_args()
 
     laptop_ip = args.laptop_ip
-    cam_source = args.source
-    if cam_source is None:
-        cam_source = os.environ.get("VISIONMATE_CAMERA")
+    cam_source = None
 
-    if cam_source is not None and cam_source.isdigit():
+    if args.source is not None:
+        cam_source = args.source
+        logger.info("Using --source override: %s", cam_source)
+    else:
+        env_cam = os.environ.get("VISIONMATE_CAMERA")
+        if env_cam:
+            cam_source = env_cam
+
+    if cam_source is not None and isinstance(cam_source, str) and cam_source.isdigit():
         cam_source = int(cam_source)
 
     if args.dry_run:
@@ -557,7 +575,7 @@ def main():
     # Create and initialize client
     client = RaspberryPiClient(server_ip=laptop_ip, server_port=8081, camera_source=cam_source)
 
-    if not client.initialize():
+    if not client.initialize(demo_frames=args.demo_frames):
         logger.error("Initialization failed!")
         return
 

@@ -152,13 +152,15 @@ class CameraStreamReader:
         ok = self._initial_connect(timeout=self.connect_timeout)
         if not ok:
             if self.exit_on_fail:
-                pi_host = getattr(config, "PI_HOST", "10.117.98.217") if config else "10.117.98.217"
+                pi_stream_url = getattr(config, "PI_STREAM_URL", "http://raspberrypi.local:5000/video") if config else "http://raspberrypi.local:5000/video"
                 print("\n" + "=" * 70, file=sys.stderr)
                 print(f"ERROR: Cannot connect to camera stream at: {self.source}", file=sys.stderr)
                 print("Could not open stream within 10 seconds. Please check:", file=sys.stderr)
                 print("  1. The Raspberry Pi is powered on and connected to the same network.", file=sys.stderr)
-                print(f"  2. 'python3 pi_hub.py' is running on the Pi ({pi_host}:5000).", file=sys.stderr)
-                print(f"  3. The stream URL opens in your browser: {self.source}", file=sys.stderr)
+                print(f"  2. 'python3 pi_hub.py' is running on the Pi (raspberrypi.local:5000).", file=sys.stderr)
+                print(f"  3. The stream URL opens in your browser: {pi_stream_url}", file=sys.stderr)
+                print(f"     Camera unreachable: {pi_stream_url}. Check pi_hub.py is running", file=sys.stderr)
+                print("     and the Pi is on the same network.", file=sys.stderr)
                 print("=" * 70 + "\n", file=sys.stderr)
                 sys.exit(1)
             else:
@@ -172,26 +174,45 @@ class CameraStreamReader:
         return self
 
     def _initial_connect(self, timeout: float) -> bool:
-        """Attempt to open camera and fetch first frame within timeout."""
+        """Attempt to open camera and fetch first frame within timeout using a hard worker timeout."""
         start_t = time.monotonic()
         while (time.monotonic() - start_t) < timeout:
-            cap = open_camera(self.source, width=self.width, height=self.height, fps=self.fps)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.size > 0:
-                    self._cap = cap
-                    h, w = frame.shape[:2]
-                    self.frame_width = w
-                    self.frame_height = h
-                    with self._lock:
-                        self._latest_frame = frame
-                        self._latest_frame_time = time.monotonic()
-                        self._frame_id += 1
-                        self._frames_captured += 1
-                        self.connected = True
-                    logger.info("Camera stream connected (%dx%d)", w, h)
-                    return True
-                cap.release()
+            remaining = timeout - (time.monotonic() - start_t)
+            attempt_timeout = min(3.0, max(0.5, remaining))
+
+            res = [None, None]
+            def _attempt():
+                try:
+                    cap = open_camera(self.source, width=self.width, height=self.height, fps=self.fps)
+                    if cap.isOpened():
+                        ret, frame = cap.read()
+                        if ret and frame is not None and frame.size > 0:
+                            res[0] = cap
+                            res[1] = frame
+                        else:
+                            cap.release()
+                except Exception:
+                    pass
+
+            th = threading.Thread(target=_attempt, daemon=True)
+            th.start()
+            th.join(timeout=attempt_timeout)
+
+            cap, frame = res
+            if cap is not None and frame is not None:
+                self._cap = cap
+                h, w = frame.shape[:2]
+                self.frame_width = w
+                self.frame_height = h
+                with self._lock:
+                    self._latest_frame = frame
+                    self._latest_frame_time = time.monotonic()
+                    self._frame_id += 1
+                    self._frames_captured += 1
+                    self.connected = True
+                logger.info("Camera stream connected (%dx%d)", w, h)
+                return True
+
             time.sleep(0.5)
         return False
 
@@ -239,27 +260,40 @@ class CameraStreamReader:
         while not self._stop_event.is_set():
             if self._stop_event.wait(2.0):
                 break
-            cap = open_camera(self.source, width=self.width, height=self.height, fps=self.fps)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.size > 0:
-                    self._cap = cap
-                    h, w = frame.shape[:2]
-                    self.frame_width = w
-                    self.frame_height = h
-                    now = time.monotonic()
-                    with self._lock:
-                        self._latest_frame = frame
-                        self._latest_frame_time = now
-                        self._frame_id += 1
-                        self._frames_captured += 1
-                        self.connected = True
-                    logger.info("Camera stream connected (%dx%d)", w, h)
-                    break
+
+            res = [None, None]
+            def _attempt():
                 try:
-                    cap.release()
+                    cap = open_camera(self.source, width=self.width, height=self.height, fps=self.fps)
+                    if cap.isOpened():
+                        ret, frame = cap.read()
+                        if ret and frame is not None and frame.size > 0:
+                            res[0] = cap
+                            res[1] = frame
+                        else:
+                            cap.release()
                 except Exception:
                     pass
+
+            th = threading.Thread(target=_attempt, daemon=True)
+            th.start()
+            th.join(timeout=3.0)
+
+            cap, frame = res
+            if cap is not None and frame is not None:
+                self._cap = cap
+                h, w = frame.shape[:2]
+                self.frame_width = w
+                self.frame_height = h
+                now = time.monotonic()
+                with self._lock:
+                    self._latest_frame = frame
+                    self._latest_frame_time = now
+                    self._frame_id += 1
+                    self._frames_captured += 1
+                    self.connected = True
+                logger.info("Camera stream connected (%dx%d)", w, h)
+                break
 
     def read(self) -> Tuple[Optional[np.ndarray], int]:
         """Return the latest frame and monotonically increasing frame_id."""

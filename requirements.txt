@@ -42,3 +42,7 @@ SpeechRecognition>=3.10.0
 # NOTE: On Windows, if PyAudio wheel fails to build: pip install pipwin && pipwin install pyaudio
 PyAudio>=0.2.14
 cactus-needle>=3.2.0
+
+# Emergency Firebase App Channel
+firebase-admin>=6.0.0
+

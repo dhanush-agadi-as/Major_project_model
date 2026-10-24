@@ -111,13 +111,13 @@ def get_distance():
 ### Option 1: Copy the complete `pi/pi_hub.py` from this repository
 From your laptop terminal / PowerShell:
 ```bash
-scp pi/pi_hub.py pi@10.117.98.217:~/pi_hub.py
+scp pi/pi_hub.py pi@raspberrypi.local:~/pi_hub.py
 ```
 
 ### Option 2: Edit `pi_hub.py` directly on the Pi
 1. SSH into the Pi:
    ```bash
-   ssh pi@10.117.98.217
+   ssh pi@raspberrypi.local
    ```
 2. Open `pi_hub.py`:
    ```bash
@@ -133,7 +133,7 @@ scp pi/pi_hub.py pi@10.117.98.217:~/pi_hub.py
 ### Option 3: Verify the Endpoint
 On your laptop or in a browser, open:
 ```
-http://10.117.98.217:5000/distance
+http://raspberrypi.local:5000/distance
 ```
 You should see:
 ```json

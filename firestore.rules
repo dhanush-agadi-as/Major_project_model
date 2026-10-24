@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // VisionMate Family App Firestore Security Rules
+    // =========================================================================
+
+    // Alerts collection:
+    // - Family devices may read alerts.
+    // - Family devices may append an entry to the acks array.
+    // - Creation and general updates (status, location, reason) are restricted to
+    //   the server backend (which uses Firebase Admin SDK and bypasses these rules).
+    match /alerts/{alertId} {
+      // Family devices authenticated or joining via app can read alerts
+      allow read: if true;
+
+      // Only allow client devices to update the 'acks' field (append acknowledgment)
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acks']);
+
+      // Client writes/creates/deletes disallowed; server Admin SDK handles alert lifecycle
+      allow create, delete: if false;
+    }
+
+    // Devices collection:
+    // - Devices can register and maintain their own device token and name
+    match /devices/{deviceId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

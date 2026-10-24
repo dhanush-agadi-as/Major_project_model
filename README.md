@@ -278,7 +278,47 @@ Wireless mode (RPi → Laptop) is network-bound and typically runs at a lower ef
 | Mobile Backend | Flask + flask-cors |
 | Database | SQLite |
 
+## Emergency Alerts & Firebase Setup
+
+VisionMate includes fall detection and emergency alerts sent **ONLY** to the family companion app via Firebase (free Spark plan).
+
+### 1. Create Firebase Project
+1. Go to the [Firebase Console](https://console.firebase.google.com/).
+2. Click **Add project**, enter a project name (e.g. `visionmate-family`), and follow the setup wizard (free Spark plan).
+
+### 2. Enable Firestore & Cloud Messaging
+1. In the Firebase console sidebar, navigate to **Build** -> **Firestore Database** -> Click **Create database** (choose Native mode and a region near you).
+2. Navigate to **Project Settings** (gear icon) -> **Cloud Messaging**.
+3. Verify that **Firebase Cloud Messaging API (V1)** is enabled (enable it in Google Cloud Console if prompted).
+
+### 3. Generate Service Account Key
+1. In **Project Settings**, switch to the **Service accounts** tab.
+2. Under "Firebase Admin SDK", select **Python** and click **Generate new private key**.
+3. Save the downloaded JSON file to the project root as `firebase_service_account.json`.
+4. Keep this file secret! `firebase_service_account.json` is in `.gitignore` and must never be committed. A template with dummy values is provided in `firebase_service_account.json.example`.
+
+### 4. Deploy Firestore Security Rules
+To deploy `firestore.rules` using the Firebase CLI:
+```bash
+# Install Firebase CLI if not already installed
+npm install -g firebase-tools
+
+# Login to Firebase
+firebase login
+
+# Initialize project (select Firestore)
+firebase use --add <your-project-id>
+
+# Deploy rules
+firebase deploy --only firestore:rules
+```
+Alternatively, copy the contents of `firestore.rules` directly into the Firebase Console:
+**Firestore Database** -> **Rules** tab -> Paste contents -> Click **Publish**.
+
+---
+
 ## Team
+
 
 Built by Team NPC's for VisionMate.
 

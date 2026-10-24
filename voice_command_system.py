@@ -529,9 +529,25 @@ class VoiceCommandParser:
 
     # Priority-ordered command patterns
     PATTERNS = {
+        'im_okay': [
+            r'^(?:please\s+)?(?:i\s*\'?\s*m|i\s+am)\s+(?:okay|ok|fine|good|alright)(?:\s+please)?$',
+            r'^(?:please\s+)?cancel\s+(?:the\s+)?(?:alert|emergency)(?:\s+please)?$',
+            r'\b(?:i\s*\'?\s*m|i\s+am)\s+(?:okay|ok|fine|good|alright)\b',
+            r'\bcancel\s+(?:the\s+)?(?:alert|emergency)\b',
+        ],
+        'emergency': [
+            r'^(?:please\s+)?(?:emergency|help\s+me|help)(?:\s+please)?$',
+            r'\b(?:emergency|help\s+me\b(?!\s+walk)|send\s+(?:the\s+)?alert)\b',
+        ],
+
+        'simulate_fall': [
+            r'^(?:please\s+)?(?:simulate|test|trigger)\s+fall(?:\s+please)?$',
+            r'\b(?:simulate|test|trigger)\s+fall\b',
+        ],
         'quit': [
             r'\b(?:shutdown|shut\s+down|shadow|shut\s+dawn|shut\s+doubt|shut\s+out|shot\s+down|shot\s+up|shutting\s+down|shutting|shut\s+it\s+down|shut\s+it|shuttle|shut|quit|exit|close|stop\s+everything)\b',
         ],
+
         'clear_notes': [
             r'^(?:please\s+)?(?:clear|delete|remove|erase|wipe)\s+(?:all\s+)?(?:the\s+|my\s+)?notes?\b(?:\s+please)?$',
         ],
@@ -593,6 +609,10 @@ class VoiceCommandParser:
             r'enroll\s+this\s+person\b',
             r'enroll\s+face\b',
             r'enroll\s+person\b',
+            # "remember a/this/that person", "remember me", "remember my face", etc.
+            # (filler-stripped forms: "remember person", "remember me", "remember face")
+            r'\bremember\s+(?:(?:a|this|that|my)\s+)?(?:person|me|my\s+face|face)\b',
+            r'\bremember\s+me\b',
         ],
         'remember': [
             r'(?<!re-)(?<!re\s)\bremember\s+(?:(?:the|a|this|that|my)\s+)?(.+?)\s+as\s+([\w\s]+)',
@@ -618,9 +638,10 @@ class VoiceCommandParser:
             r'(?<!re-)(?<!re\s)\bremember\b',
         ],
         'where_am_i': [
+            r'^(?:please\s+)?(?:where\s+am\s+i|where\s+am|where\s+i|whereabouts|where|my\s+location|what\s+is\s+this\s+place|where\s+is\s+this|what\s+is\s+my\s+location|current\s+location)(?:\s+please)?$',
             r'where\s+am\s+i\b',
-            r'my\s+location\b',
             r'where\s+is\s+this\b',
+            r'what\s+is\s+this\s+place\b',
             r'what\s+is\s+my\s+location\b',
             r'current\s+location\b',
         ],
@@ -663,6 +684,18 @@ class VoiceCommandParser:
             r'^(?:please\s+)?(?:turn\s+)?obstacle\s+beeps?\s+(on|off)\b(?:\s+please)?$',
             r'\bobstacle\s+beeps?\s+(on|off)\b',
             r'^(?:please\s+)?toggle\s+obstacle\s+beeps?\b(?:\s+please)?$',
+        ],
+        'check_sensor': [
+            r'^(?:please\s+)?check\s+(?:the\s+)?(?:sensor|distance\s+sensor|distance)(?:\s+please)?$',
+            r'\bcheck\s+(?:the\s+)?(?:distance\s+)?sensor\b',
+            r'\bcheck\s+sensor\b',
+            r'\bsensor\s+check\b',
+        ],
+        'test_beep': [
+            r'^(?:please\s+)?test\s+(?:the\s+)?(?:obstacle\s+)?beeps?(?:\s+please)?$',
+            r'\btest\s+(?:the\s+)?(?:obstacle\s+)?beeps?\b',
+            r'\btest\s+beep\b',
+            r'^(?:please\s+)?(?:play\s+)?beep\s+test(?:\s+please)?$',
         ],
         'advance_gps': [
             r'advance\s+mock\s+gps\b',
@@ -846,6 +879,34 @@ class VoiceCommandParser:
                             'wake_word': True,
                             'raw_text': clean_text
                         }
+
+        # Whole-command check for where_am_i:
+        # User requirement: treat "where am", "where", "where I", "where am I",
+        # "whereabouts", "my location", "what is this place" as where_am_i,
+        # but only when it is the whole command (so "where" does not trigger anything else).
+        cmd_for_where = command_target.strip().lower()
+        cmd_for_where = re.sub(r'^(?:please\s+|can\s+you\s+|tell\s+me\s+)+', '', cmd_for_where).strip()
+        cmd_for_where = re.sub(r'(?:\s+please)+$', '', cmd_for_where).strip()
+        WHERE_AM_I_WHOLE_COMMANDS = {
+            "where am",
+            "where",
+            "where i",
+            "where am i",
+            "whereabouts",
+            "my location",
+            "what is this place",
+            "where is this",
+            "what is my location",
+            "current location",
+        }
+        if cmd_for_where in WHERE_AM_I_WHOLE_COMMANDS:
+            logger.info(f"Where am I whole command match: '{cmd_for_where}'")
+            return {
+                'intent': 'where_am_i',
+                'parameters': {},
+                'wake_word': has_wake,
+                'raw_text': clean_text
+            }
 
         # Strip filler words before intent parsing:
 
@@ -1124,11 +1185,15 @@ Voice-Only Commands (Say 'Hey Vision' first, or speak command after ready beep):
 - "List all items" - List all remembered objects
 - "Show database" - Summarize database contents
 - "Shut down" - Quit VisionMate (shuts down immediately)
+- "I'm okay" - Cancel active emergency check-in or alert
+- "Emergency" / "Help me" - Send immediate emergency alert
+- "Simulate fall" - Test fall check-in protocol
 - "Help" - Speak available commands
 
-Confirmations: When asked a question (e.g., 'Is this your phone?'),
-simply reply 'yes' or 'no' within 6 seconds without saying the wake word.
+Confirmations: When asked a question (e.g., 'Is this your phone?' or 'Are you okay?'),
+simply reply directly within the window without saying the wake word.
 """
+
 
 
 class VoiceCommandSystem:
@@ -1166,6 +1231,14 @@ class VoiceCommandSystem:
         self.dictation_until = 0.0
         self.on_dictate_callback: Optional[Callable[[str], None]] = None
         self._dictation_timer: Optional[threading.Timer] = None
+
+        # Emergency check-in window (up to 8s without wake word)
+        self.emergency_checkin_active = False
+        self.emergency_checkin_until = 0.0
+        self.on_emergency_reply: Optional[Callable[[str], None]] = None
+        self._emergency_timer: Optional[threading.Timer] = None
+        self.emergency_manager = None
+
 
         # Default handlers
         self.command_callbacks['take_note'] = self._default_handle_take_note
@@ -1383,6 +1456,42 @@ class VoiceCommandSystem:
         """
         self.open_dictation_window(on_dictate=on_choice, timeout=timeout)
 
+    def open_emergency_window(self, on_reply: Optional[Callable[[str], None]] = None, timeout: float = 8.0):
+        """
+        Open an emergency check-in window (up to 8s) where speech is captured directly
+        without requiring a wake word.
+        """
+        if self._emergency_timer:
+            try:
+                self._emergency_timer.cancel()
+            except Exception:
+                pass
+            self._emergency_timer = None
+
+        self.emergency_checkin_active = True
+        self.emergency_checkin_until = time.time() + timeout
+        self.on_emergency_reply = on_reply
+        self._emergency_timer = threading.Timer(timeout, self.close_emergency_window)
+        self._emergency_timer.daemon = True
+        self._emergency_timer.start()
+        logger.info(f"Opened {timeout}s emergency check-in window")
+
+    def close_emergency_window(self):
+        """Close emergency check-in window."""
+        if not self.emergency_checkin_active:
+            return
+        if self._emergency_timer:
+            try:
+                self._emergency_timer.cancel()
+            except Exception:
+                pass
+            self._emergency_timer = None
+        self.emergency_checkin_active = False
+        self.emergency_checkin_until = 0.0
+        self.on_emergency_reply = None
+        logger.info("Closed emergency check-in window")
+
+
     def _default_handle_take_note(self, params: Dict[str, Any]):
         """Default handler for take_note intent with empty text dictation flow."""
         text = params.get('text', '').strip()
@@ -1461,11 +1570,14 @@ class VoiceCommandSystem:
     def is_quiet_mode(self) -> bool:
         """
         Return True if quiet mode is active:
+        - An emergency check-in window is open
         - A dictation window is open
         - A yes/no confirmation window is open
         - Within 3 seconds after a wake word is detected
         """
         now = time.time()
+        if getattr(self, 'emergency_checkin_active', False):
+            return True
         if getattr(self, 'dictation_active', False):
             return True
         if getattr(self, 'yes_no_active', False):
@@ -1473,6 +1585,7 @@ class VoiceCommandSystem:
         if (now - getattr(self, 'last_wake_word_time', 0.0)) < 3.0:
             return True
         return False
+
 
     def _get_tts_active_status(self) -> tuple[bool, str]:
         """
@@ -1679,7 +1792,7 @@ class VoiceCommandSystem:
         if not self.enabled or not self.running:
             return
 
-        window_open = bool(self.dictation_active or self.yes_no_active)
+        window_open = bool(self.dictation_active or self.yes_no_active or getattr(self, 'emergency_checkin_active', False))
         if window_open:
             logger.info("Audio chunk captured while window is open")
 
@@ -1720,7 +1833,7 @@ class VoiceCommandSystem:
             return None
 
         now = time.time()
-        window_open = bool(self.dictation_active or self.yes_no_active)
+        window_open = bool(self.dictation_active or self.yes_no_active or getattr(self, 'emergency_checkin_active', False))
         awaiting = bool(self.awaiting_command_until and now <= self.awaiting_command_until)
         has_wake, remainder = self.parser.strip_wake_word(clean)
 
@@ -1729,8 +1842,28 @@ class VoiceCommandSystem:
         else:
             logger.debug(f"Processing voice input: '{clean}'")
 
+        # -1. Emergency Check-in Window (8-second window, speech captured directly without wake word)
+        if getattr(self, 'emergency_checkin_active', False):
+            if now > self.emergency_checkin_until:
+                self.close_emergency_window()
+            else:
+                has_wake, remainder = self.parser.strip_wake_word(clean)
+                target = remainder if (has_wake and remainder) else clean
+                cb = self.on_emergency_reply
+                self.close_emergency_window()
+                if cb:
+                    try:
+                        cb(target)
+                    except Exception as e:
+                        logger.error(f"Error in on_emergency_reply callback: {e}")
+                cmd = self.parser.parse(target)
+                if cmd and cmd.get('intent') in ('im_okay', 'emergency', 'simulate_fall'):
+                    self._execute_command(cmd)
+                return {'intent': 'emergency_reply', 'parameters': {'text': target}}
+
         # 0. Dictation Window (10-second window, next utterance without wake word is note text)
         if self.dictation_active:
+
             if now > self.dictation_until:
                 self._on_dictation_timeout()
             else:

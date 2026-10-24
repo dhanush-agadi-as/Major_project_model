@@ -21,3 +21,8 @@ yolov8n_openvino_model/
 Thumbs.db
 test.wav
 data/
+
+# Emergency & Firebase Secrets
+firebase_service_account.json
+emergency_config.json
+

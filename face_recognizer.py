@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import logging
 import time
+import collections
 from typing import List, Dict, Optional, Tuple
 from config import FACE_RECOGNITION_THRESHOLD, FACE_MODEL, FACE_DET_SIZE
 from database import VisionMateDB
@@ -82,11 +83,12 @@ class FaceRecognizer:
         self.face_tracks = {}  # track_id -> dict
         self._next_face_track_id = 1
         self.iou_threshold = 0.3
-        self.track_max_age = 2.0
+        self.track_max_age = 10.0  # Retain track identity until lost for 10 s
         self.last_frame_time_ms = 0.0
         self.last_detection_time = -999.0
         self.last_detected_faces = []
         self.last_recognition_results = []
+        self._last_faces_log_time = 0.0
 
         self.enrollment_buffer = {
             'images': [],
@@ -105,22 +107,19 @@ class FaceRecognizer:
         """Load all known faces from database"""
         self.known_faces = self.db.get_all_faces()
     
-    def detect_faces(self, frame: np.ndarray, yolo_has_person: bool = True, current_time: Optional[float] = None) -> List[Dict]:
+    def detect_faces(self, frame: np.ndarray, yolo_has_person: bool = True, current_time: Optional[float] = None, person_boxes: Optional[List[List[int]]] = None) -> List[Dict]:
         """
         Detect faces in frame and extract embeddings.
-        Runs at most 5 times per second and only when YOLO sees a person.
-        Reuses the last result between runs.
+        Runs full-frame pass and additional passes on YOLO person crops (upscaled to >=160px short side).
         
         Args:
             frame: Input image (BGR format)
             yolo_has_person: True if YOLO sees a person in the frame
             current_time: Optional explicit timestamp (seconds)
+            person_boxes: Optional list of [x1, y1, x2, y2] person bounding boxes
             
         Returns:
-            List of face dictionaries containing:
-                - bbox: [x1, y1, x2, y2]
-                - embedding: 512-d face embedding (or None if using OpenCV)
-                - confidence: Detection confidence
+            List of face dictionaries containing bbox, embedding, confidence
         """
         now = current_time if current_time is not None else time.time()
         if not yolo_has_person:
@@ -128,57 +127,109 @@ class FaceRecognizer:
             return []
 
         # Run detection at most 5 times per second (0.2s interval)
-        if (now - self.last_detection_time) < 0.20 and self.last_detected_faces:
+        if (now - self.last_detection_time) < 0.20 and self.last_detected_faces and person_boxes is None:
             return self.last_detected_faces
 
         self.last_detection_time = now
+        results = []
+        h_frame, w_frame = frame.shape[:2]
 
         if self.insightface_available:
-            # Use InsightFace
+            # 1. Full-frame pass
             faces = self.app.get(frame)
-            
-            results = []
             for face in faces:
-                # Minimum face size/quality check
                 bbox = face.bbox.astype(int)
                 width = bbox[2] - bbox[0]
                 height = bbox[3] - bbox[1]
-                
-                # Reject tiny faces as they're prone to false matches
                 if width < 30 or height < 30:
                     continue
-                    
-                embedding = face.normed_embedding
-                
-                face_dict = {
-                    'bbox': bbox.tolist(),  # [x1, y1, x2, y2]
-                    'embedding': embedding,
+                results.append({
+                    'bbox': bbox.tolist(),
+                    'embedding': face.normed_embedding,
                     'confidence': float(face.det_score)
-                }
-                results.append(face_dict)
-            
-            self.last_detected_faces = results
-            return results
+                })
+
+            # 2. YOLO person crops pass (upscale short side to >= 160 px)
+            if person_boxes:
+                for pbox in person_boxes:
+                    px1 = max(0, min(w_frame - 1, int(pbox[0])))
+                    py1 = max(0, min(h_frame - 1, int(pbox[1])))
+                    px2 = max(0, min(w_frame, int(pbox[2])))
+                    py2 = max(0, min(h_frame, int(pbox[3])))
+                    pw = px2 - px1
+                    ph = py2 - py1
+                    if pw < 30 or ph < 30:
+                        continue
+                    crop = frame[py1:py2, px1:px2]
+                    min_side = min(pw, ph)
+                    scale = 160.0 / float(min_side) if min_side < 160 else 1.0
+                    if scale > 1.0:
+                        crop_resized = cv2.resize(crop, (int(pw * scale), int(ph * scale)))
+                    else:
+                        crop_resized = crop
+
+                    crop_faces = self.app.get(crop_resized)
+                    for cf in crop_faces:
+                        cbbox = cf.bbox.astype(int)
+                        cw = cbbox[2] - cbbox[0]
+                        ch = cbbox[3] - cbbox[1]
+                        if cw < 20 or ch < 20:
+                            continue
+                        fx1 = max(0, min(w_frame, int(cbbox[0] / scale) + px1))
+                        fy1 = max(0, min(h_frame, int(cbbox[1] / scale) + py1))
+                        fx2 = max(0, min(w_frame, int(cbbox[2] / scale) + px1))
+                        fy2 = max(0, min(h_frame, int(cbbox[3] / scale) + py1))
+                        candidate_box = [fx1, fy1, fx2, fy2]
+                        if not any(self._compute_iou(candidate_box, r['bbox']) > 0.4 for r in results):
+                            results.append({
+                                'bbox': candidate_box,
+                                'embedding': cf.normed_embedding,
+                                'confidence': float(cf.det_score)
+                            })
         else:
-            # Use OpenCV fallback (detection only, no embeddings)
+            # OpenCV fallback (detection only)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
-            
-            results = []
             for (x, y, w, h) in faces:
-                # Reject tiny faces
                 if w < 30 or h < 30:
                     continue
-                    
-                face_dict = {
+                results.append({
                     'bbox': [x, y, x + w, y + h],
-                    'embedding': None,  # No embeddings in fallback mode
-                    'confidence': 0.9  # OpenCV doesn't provide confidence
-                }
-                results.append(face_dict)
-            
-            self.last_detected_faces = results
-            return results
+                    'embedding': None,
+                    'confidence': 0.9
+                })
+
+            if person_boxes:
+                for pbox in person_boxes:
+                    px1 = max(0, min(w_frame - 1, int(pbox[0])))
+                    py1 = max(0, min(h_frame - 1, int(pbox[1])))
+                    px2 = max(0, min(w_frame, int(pbox[2])))
+                    py2 = max(0, min(h_frame, int(pbox[3])))
+                    pw = px2 - px1
+                    ph = py2 - py1
+                    if pw < 30 or ph < 30:
+                        continue
+                    crop = frame[py1:py2, px1:px2]
+                    min_side = min(pw, ph)
+                    scale = 160.0 / float(min_side) if min_side < 160 else 1.0
+                    crop_resized = cv2.resize(crop, (int(pw * scale), int(ph * scale))) if scale > 1.0 else crop
+                    cgray = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2GRAY)
+                    cfaces = self.face_cascade.detectMultiScale(cgray, 1.3, 5)
+                    for (cx, cy, cw, ch) in cfaces:
+                        fx1 = max(0, min(w_frame, int(cx / scale) + px1))
+                        fy1 = max(0, min(h_frame, int(cy / scale) + py1))
+                        fx2 = max(0, min(w_frame, int((cx + cw) / scale) + px1))
+                        fy2 = max(0, min(h_frame, int((cy + ch) / scale) + py1))
+                        candidate_box = [fx1, fy1, fx2, fy2]
+                        if not any(self._compute_iou(candidate_box, r['bbox']) > 0.4 for r in results):
+                            results.append({
+                                'bbox': candidate_box,
+                                'embedding': None,
+                                'confidence': 0.9
+                            })
+
+        self.last_detected_faces = results
+        return results
     
     def _compute_iou(self, box1: List[int], box2: List[int]) -> float:
         """
@@ -205,30 +256,20 @@ class FaceRecognizer:
             return 0.0
         return float(intersection / union)
 
-    def _prune_tracks(self, now: float, max_age: float = 2.0):
+    def _prune_tracks(self, now: float, max_age: float = 10.0):
         """Remove tracks that haven't been seen for more than max_age seconds"""
         to_del = [tid for tid, trk in self.face_tracks.items() if (now - trk['last_seen']) > max_age]
         for tid in to_del:
             del self.face_tracks[tid]
 
     def recognize_faces(self, frame: np.ndarray, current_time: Optional[float] = None,
-                        frame_time_ms: Optional[float] = None, yolo_has_person: bool = True) -> List[Dict]:
+                        frame_time_ms: Optional[float] = None, yolo_has_person: bool = True,
+                        person_boxes: Optional[List[List[int]]] = None) -> List[Dict]:
         """
-        Detect and recognize faces in frame.
-        - Skips entirely when YOLO sees no person or when frame time is above 150 ms
-        - Runs detection at most 5 times per second and reuses last result between runs
-        - Only processes the 2 largest faces per frame
-        - Uses an IoU tracker so each tracked face keeps its identity
-        - Recognises a given track at most once per second (and once at first sight)
-
-        Args:
-            frame: Input image (BGR format)
-            current_time: Optional explicit timestamp (seconds)
-            frame_time_ms: Optional frame processing time in ms
-            yolo_has_person: True if YOLO sees a person in the frame
-
-        Returns:
-            List of recognized faces with names or 'Unknown'
+        Detect and recognize faces in frame independently with round-robin scheduling,
+        embedding averaging across the last 3 embeddings, identity stickiness (retaining
+        confirmed identity until track is lost for 10s), single name per track enforcement,
+        and required 1/s + per-attempt logging.
         """
         now = current_time if current_time is not None else time.time()
 
@@ -243,29 +284,25 @@ class FaceRecognizer:
         if self.last_frame_time_ms > 150.0:
             return self.last_recognition_results
 
-        # Run detection at most 5 times per second (interval >= 0.2s); reuse last result between runs
-        if (now - self.last_detection_time) < 0.20 and self.last_recognition_results:
-            return self.last_recognition_results
-
-        detected_faces = self.detect_faces(frame, yolo_has_person=yolo_has_person, current_time=now)
+        # Run detection
+        detected_faces = self.detect_faces(frame, yolo_has_person=yolo_has_person, current_time=now, person_boxes=person_boxes)
         if not detected_faces:
             self._prune_tracks(now, self.track_max_age)
             self.last_recognition_results = []
             return []
 
-        # Only the 2 largest faces per frame
+        # Keep only the 2 largest faces per frame (sorted by bounding-box area)
         if len(detected_faces) > 2:
-            detected_faces.sort(
+            detected_faces = sorted(
+                detected_faces,
                 key=lambda f: (f['bbox'][2] - f['bbox'][0]) * (f['bbox'][3] - f['bbox'][1]),
                 reverse=True
-            )
-            detected_faces = detected_faces[:2]
+            )[:2]
 
-        results = []
+        # Match detected faces to existing tracks using IoU >= threshold
         unmatched_detections = list(range(len(detected_faces)))
         unmatched_tracks = set(self.face_tracks.keys())
 
-        # Match detected faces to existing tracks using IoU >= threshold
         matches = []
         for det_idx in unmatched_detections:
             det_box = detected_faces[det_idx]['bbox']
@@ -275,7 +312,6 @@ class FaceRecognizer:
                 if iou >= self.iou_threshold:
                     matches.append((iou, det_idx, trk_id))
 
-        # Sort matches by IoU descending (greedy matching)
         matches.sort(key=lambda x: x[0], reverse=True)
         matched_dets = set()
         matched_trks = set()
@@ -291,75 +327,165 @@ class FaceRecognizer:
             track['bbox'] = face['bbox']
             track['confidence'] = face.get('confidence', 0.9)
             track['last_seen'] = now
+            if face.get('embedding') is not None:
+                track['embeddings'].append(face['embedding'])
 
-            # Recognise a given track at most once per second (and once at first sight)
-            if (now - track['last_rec_time']) >= 1.0:
-                face_embedding = face.get('embedding')
-                if face_embedding is not None:
-                    name, distance, margin = self._match_face(face_embedding)
-                    track['name'] = name
-                    track['distance'] = distance
-                    track['margin'] = margin
-                track['last_rec_time'] = now
-                track['rec_count'] += 1
-
-            results.append({
-                'bbox': face['bbox'],
-                'name': track['name'],
-                'distance': track['distance'],
-                'margin': track['margin'],
-                'confidence': track['confidence'],
-                'track_id': trk_id
-            })
-
-        # New detections: first sight! (recognize once at first sight)
+        # New detections: create tracks
         for det_idx in unmatched_detections:
             if det_idx in matched_dets:
                 continue
             face = detected_faces[det_idx]
-            face_embedding = face.get('embedding')
-            if face_embedding is not None:
-                name, distance, margin = self._match_face(face_embedding)
-            else:
-                name, distance, margin = 'Unknown', 1.0, 0.0
-
             trk_id = self._next_face_track_id
             self._next_face_track_id += 1
+
+            embs = collections.deque(maxlen=3)
+            if face.get('embedding') is not None:
+                embs.append(face['embedding'])
 
             self.face_tracks[trk_id] = {
                 'track_id': trk_id,
                 'bbox': face['bbox'],
-                'name': name,
-                'distance': distance,
-                'margin': margin,
+                'name': 'Unknown',
+                'confirmed_name': None,
+                'consecutive_matches': 0,
+                'similarity': 0.0,
+                'distance': 1.0,
+                'margin': 0.0,
                 'confidence': face.get('confidence', 0.9),
+                'embeddings': embs,
                 'first_seen': now,
                 'last_seen': now,
-                'last_rec_time': now,
-                'rec_count': 1
+                'last_rec_time': 0.0,
+                'rec_count': 0
             }
 
+        # Associate each track with person box if provided
+        if person_boxes:
+            for trk in self.face_tracks.values():
+                fb = trk['bbox']
+                fcx = (fb[0] + fb[2]) / 2.0
+                fcy = (fb[1] + fb[3]) / 2.0
+                matched_pbox = None
+                for pb in person_boxes:
+                    if pb[0] <= fcx <= pb[2] and pb[1] <= fcy <= pb[3]:
+                        matched_pbox = pb
+                        break
+                trk['person_box'] = matched_pbox
+
+        # Round-robin recognition scheduling:
+        # Candidate tracks are those visible right now
+        visible_tracks = [t for t in self.face_tracks.values() if (now - t['last_seen']) <= 1.0]
+
+        # Unrecognized tracks >= 2/s (interval <= 0.5s), recognized tracks 1/2s (interval <= 2.0s)
+        eligible_tracks = []
+        for t in visible_tracks:
+            min_interval = 2.0 if t.get('confirmed_name') is not None else 0.5
+            if (now - t['last_rec_time']) >= min_interval:
+                eligible_tracks.append(t)
+
+        # Sort eligible tracks by last_rec_time ascending for round-robin fairness
+        eligible_tracks.sort(key=lambda t: t['last_rec_time'])
+
+        import config
+        sim_thr = getattr(config, 'FACE_SIMILARITY_THRESHOLD', 0.60)
+
+        for track in eligible_tracks:
+            embs = list(track['embeddings'])
+            if not embs:
+                track['last_rec_time'] = now
+                continue
+
+            # Average last 3 embeddings
+            avg_emb = np.mean(embs, axis=0)
+            if avg_emb.ndim > 0 and len(avg_emb) > 1:
+                norm = np.linalg.norm(avg_emb)
+                if norm > 1e-12:
+                    avg_emb = avg_emb / norm
+
+            best_name, best_dist, margin = self._match_face(avg_emb)
+
+            sim = max(0.0, float(1.0 - (best_dist ** 2) / 2.0))
+            is_match = (best_name != 'Unknown')
+            match_str = "match" if is_match else "no_match"
+            best_disp = best_name if is_match else "none"
+
+            attempt_log = f"FACE: track={track['track_id']} best={best_disp} sim={sim:.2f} thr={sim_thr:.2f} -> {match_str}"
+            print(attempt_log)
+            logger.info(attempt_log)
+
+            track['similarity'] = sim
+            track['distance'] = best_dist
+            track['last_rec_time'] = now
+            track['rec_count'] += 1
+
+            if is_match:
+                track['consecutive_matches'] += 1
+                if track['consecutive_matches'] >= 2:
+                    track['confirmed_name'] = best_name
+                    track['name'] = best_name
+                elif not track.get('confirmed_name'):
+                    track['name'] = best_name
+            else:
+                if not track.get('confirmed_name'):
+                    track['name'] = 'Unknown'
+                    track['consecutive_matches'] = 0
+                else:
+                    # Identity stickiness: do not downgrade on a single weak frame!
+                    track['name'] = track['confirmed_name']
+
+        # Enforce 1 name per track: higher similarity keeps it, loser reset and re-evaluated
+        assigned_names = {}
+        for trk in self.face_tracks.values():
+            nm = trk.get('name')
+            if nm and nm != 'Unknown':
+                assigned_names.setdefault(nm, []).append(trk)
+
+        for nm, trks in assigned_names.items():
+            if len(trks) > 1:
+                trks.sort(key=lambda t: t.get('similarity', 0.0), reverse=True)
+                winner = trks[0]
+                for loser in trks[1:]:
+                    loser['name'] = 'Unknown'
+                    loser['confirmed_name'] = None
+                    loser['consecutive_matches'] = 0
+                    loser['last_rec_time'] = 0.0  # Force immediate re-evaluation
+
+        # Prune tracks lost for > 10 s
+        self._prune_tracks(now, self.track_max_age)
+
+        # 1/s FACES log
+        if (now - self._last_faces_log_time) >= 1.0:
+            active_trks = [t for t in self.face_tracks.values() if (now - t['last_seen']) <= 1.0]
+            rec_strs = [f"{t['name']}({t.get('similarity', 0.0):.2f})" for t in active_trks if t['name'] != 'Unknown']
+            unrec_count = sum(1 for t in active_trks if t['name'] == 'Unknown')
+            faces_log = f"FACES: detected={len(detected_faces)} tracks={len(active_trks)} recognized=[{', '.join(rec_strs)}] unknown={unrec_count}"
+            print(faces_log)
+            logger.info(faces_log)
+            self._last_faces_log_time = now
+
+        # Build results for currently detected faces
+        results = []
+        for face in detected_faces:
+            # Find matching track
+            fb = face['bbox']
+            matched_trk = None
+            for trk in self.face_tracks.values():
+                if self._compute_iou(fb, trk['bbox']) >= 0.3:
+                    matched_trk = trk
+                    break
+            name = matched_trk['name'] if matched_trk else 'Unknown'
+            dist = matched_trk['distance'] if matched_trk else 1.0
+            tid = matched_trk['track_id'] if matched_trk else None
+            sim = matched_trk['similarity'] if matched_trk else 0.0
             results.append({
                 'bbox': face['bbox'],
                 'name': name,
-                'distance': distance,
-                'margin': margin,
+                'distance': dist,
+                'margin': 0.0,
+                'similarity': sim,
                 'confidence': face.get('confidence', 0.9),
-                'track_id': trk_id
+                'track_id': tid
             })
-
-        self._prune_tracks(now, self.track_max_age)
-
-        # Update recent_identities for short-term identity persistence
-        for r in results:
-            if r['name'] != 'Unknown':
-                center_x = (r['bbox'][0] + r['bbox'][2]) / 2
-                center_y = (r['bbox'][1] + r['bbox'][3]) / 2
-                self.recent_identities[r['name']] = {
-                    'center': (center_x, center_y),
-                    'timestamp': now,
-                    'last_distance': r['distance']
-                }
 
         self.last_recognition_results = results
         return results

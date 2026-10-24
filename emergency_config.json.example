@@ -1,0 +1,10 @@
+{
+  "userName": "Bharath",
+  "emergency_dry_run": true,
+  "service_account_path": "firebase_service_account.json",
+  "checkin_ask_count": 3,
+  "checkin_timeout_s": 8.0,
+  "cooldown_after_checkin_s": 60.0,
+  "automatic_alert_rate_limit_s": 300.0,
+  "location_update_interval_s": 5.0
+}

@@ -35,9 +35,12 @@ TEST_DATA_DIR = os.path.join(BASE_DIR, "test", "test_data")
 
 # Camera Configuration
 USE_PI_CAMERA = True
-PI_HOST = os.environ.get("VISIONMATE_PI_HOST", "10.117.98.217")
+PI_HOST = "raspberrypi.local"
 PI_STREAM_URL = f"http://{PI_HOST}:5000/video"
 SENSORS_URL = f"http://{PI_HOST}:5000/sensors"
+DISTANCE_URL = f"http://{PI_HOST}:5000/distance"
+MOTION_URL = f"http://{PI_HOST}:5000/motion"
+PI_MOTION_URL = MOTION_URL
 OBSTACLE_WARN_CM = 100
 OBSTACLE_STOP_CM = 40
 OBSTACLE_BEEPS = True
@@ -74,12 +77,14 @@ TARGET_CLASSES = ['person', 'chair', 'bottle', 'couch', 'tv', 'keys', 'cell phon
 
 # Face Recognition Configuration
 FACE_RECOGNITION_THRESHOLD = 0.65  # Euclidean distance threshold (higher = more lenient)
+FACE_SIMILARITY_THRESHOLD = 0.60   # Cosine similarity threshold (higher = stricter)
 FACE_MODEL = "buffalo_l"  # InsightFace model
 # Increased to (320, 320) to better handle partial faces and occlusions at the cost of slight latency.
 FACE_DET_SIZE = (320, 320)
 FACE_ENROLLMENT_FRAMES = 5  # Capture multiple frames across angles for robustness
 FACE_RECOGNITION_FRAME_INTERVAL = 14  # Increased further - noticeably slower to detect new faces appearing
 FACE_NAME_HINTS = ["Bharath", "Dhanush"]  # Editable name hints for voice enrollment disambiguation/correction
+
 
 # Item Tracking Configuration
 ITEM_TRACKING_TIMEOUT = 3.0  # seconds
@@ -170,7 +175,9 @@ NAVIGATION_ARRIVAL_DISTANCE = 20  # meters - consider arrived when within this d
 NAVIGATION_UPDATE_INTERVAL = 5  # seconds - how often to check position
 
 # GPS Configuration
-GPS_MOCK_MODE = True  # Set to False when real GPS is connected
+GPS_MOCK_MODE = False  # Set to False when real GPS is connected
+PHONE_GPS_URL = "https://127.0.0.1:5001/api/location"
+PHONE_GPS_MAX_AGE_S = 30
 GPS_PORT = "/dev/ttyUSB0"  # Serial port for GPS module (adjust for your system)
 GPS_BAUDRATE = 9600
 GPS_USE_IP_GEOLOCATION = True  # Set True to use free IP-based geolocation instead of mock/serial GPS
@@ -229,6 +236,23 @@ YES_NO_TIMEOUT = 6.0       # Seconds to wait for yes/no confirmation window
 
 # Speech-to-Text Engine: "whistle" (offline Cactus Whistle), "google" (online Google STT), "auto" (Whistle first, fallback to Google if empty and online), "hybrid" (Google first when online, fallback to Whistle on error or offline)
 STT_ENGINE = "hybrid"
+
+# Emergency Alert & Fall Detection Configuration
+EMERGENCY_USER_NAME = os.environ.get("VISIONMATE_USER_NAME", "Bharath")
+EMERGENCY_DRY_RUN = True  # Safety default: log what would be sent, send nothing
+FIREBASE_SERVICE_ACCOUNT_PATH = os.environ.get(
+    "FIREBASE_SERVICE_ACCOUNT_PATH",
+    os.path.join(BASE_DIR, "firebase_service_account.json")
+)
+EMERGENCY_CONFIG_PATH = os.path.join(BASE_DIR, "emergency_config.json")
+PI_MOTION_URL = MOTION_URL
+CHECKIN_REPLY_WINDOW_S = 3.0
+EMERGENCY_CHECKIN_TIMEOUT_S = 3.0
+EMERGENCY_CHECKIN_MAX_ASKS = 3
+EMERGENCY_COOLDOWN_S = 60.0
+EMERGENCY_AUTO_RATE_LIMIT_S = 300.0  # At most 1 automatic alert per 5 minutes
+FALL_TRIGGER_ON_IMPACT = True  # Laptop starts check-in on either fall or impact event
+
 
 # Debug flag to log ThreadPoolExecutor creation stack once at startup
 
